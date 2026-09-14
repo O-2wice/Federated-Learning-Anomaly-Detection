@@ -1,6 +1,9 @@
 ---
 title: "FLEAD"
 subtitle: "Streaming anomaly detection and private federated learning on a simulated IoT fleet"
+pagetitle: "FLEAD: real-time IoT attack detection with Kafka, Flink and federated learning"
+image: images/social-card.png
+description: "How FLEAD streams 2,400 simulated IoT devices through Kafka, scores every reading with a Random Cut Forest in Flink, trains a shared attack detector with differentially private federated learning and evaluates it in Spark."
 title-block-banner: "#1e293b"
 title-block-banner-color: "#ffffff"
 ---

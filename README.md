@@ -1,5 +1,6 @@
 # FLEAD: Federated Learning for Edge Anomaly Detection
 
+[![Read the write-up](https://img.shields.io/badge/read-the%20write--up-2b6cb0)](https://o-2wice.github.io/Federated-Learning-Anomaly-Detection/)
 [![tests](https://github.com/O-2wice/Federated-Learning-Anomaly-Detection/actions/workflows/tests.yml/badge.svg)](https://github.com/O-2wice/Federated-Learning-Anomaly-Detection/actions/workflows/tests.yml)
 ![Problem](https://img.shields.io/badge/problem-IoT%20attack%20detection-2b6cb0)
 ![Data](https://img.shields.io/badge/data-Edge--IIoTset-2a9d8f)
@@ -56,8 +57,8 @@ From one 77-minute run of the full pipeline.
 
 Details and the experiments behind the settings:
 [SYSTEM.md](SYSTEM.md#4-measured-results) and
-[docs/RCF_EXPLAINED.md](docs/RCF_EXPLAINED.md). The design story, with the
-problems found along the way: [case study](docs/case-study/index.qmd).
+[docs/RCF_EXPLAINED.md](docs/RCF_EXPLAINED.md). The full story, with architecture, design
+decisions and results: [case study](https://o-2wice.github.io/Federated-Learning-Anomaly-Detection/).
 
 ![Pipeline monitor](docs/case-study/images/monitor.png)
 

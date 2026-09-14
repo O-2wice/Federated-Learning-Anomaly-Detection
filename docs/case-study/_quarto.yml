@@ -1,14 +1,39 @@
 project:
-  title: "FLEAD case study"
+  type: website
   output-dir: _site
+  resources:
+    - images/monitor-live.webm
+    - images/social-card.png
+    - images/favicon.png
+
+website:
+  title: "FLEAD"
+  description: "A real-time pipeline that detects network attacks on 2,400 simulated IoT devices with Kafka, Flink, a Random Cut Forest, differentially private federated learning, Spark, TimescaleDB, Grafana and Prometheus."
+  site-url: "https://o-2wice.github.io/Federated-Learning-Anomaly-Detection/"
+  repo-url: "https://github.com/O-2wice/Federated-Learning-Anomaly-Detection"
+  favicon: images/favicon.png
+  # Social previews in LinkedIn, Slack and X
+  image: images/social-card.png
+  open-graph:
+    image-width: 1200
+    image-height: 630
+    locale: en_GB
+  twitter-card:
+    card-style: summary_large_image
+  navbar:
+    title: "FLEAD"
+    right:
+      - icon: github
+        href: "https://github.com/O-2wice/Federated-Learning-Anomaly-Detection"
+        aria-label: GitHub repository
 
 format:
   html:
     theme: cosmo
     css: styles.css
     toc: true
-    toc-title: "On this page"
     toc-depth: 2
+    toc-title: "On this page"
     lightbox: true
     fig-align: center
     link-external-newwindow: true
