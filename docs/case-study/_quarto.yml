@@ -37,3 +37,7 @@ format:
     lightbox: true
     fig-align: center
     link-external-newwindow: true
+    # Google Search Console ownership; removing it unverifies the property
+    include-in-header:
+      text: |
+        <meta name="google-site-verification" content="jrY_3kfE94UgAOUETVccWoXGGhYpIR16svPJzQmwXFI" />
