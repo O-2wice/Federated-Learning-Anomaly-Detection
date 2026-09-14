@@ -1,10 +1,15 @@
 """
-Simple Kafka to TimescaleDB Collector
-Directly reads IoT data from Kafka and writes to database for Grafana visualization.
-Bypasses Flink/Spark complexity - just collects and stores real-time data.
+Kafka to TimescaleDB collector.
 
-Topic: edge-iiot-stream
-Table: iot_data(ts, device_id, value, label)
+Consumes three topics and writes them in batches (every 1,000 messages or
+10 seconds):
+
+    edge-iiot-stream     -> iot_data(ts, device_id, value, label)
+    anomalies            -> anomalies(ts, device_id, value, anomaly_score, severity, detection_method, label)
+    local-model-updates  -> local_model_updates(ts, device_id, model_version, accuracy, loss, mean, std)
+
+Fleet KPIs (row totals, device counts) are computed by
+dashboard_metrics_updater.py, so no batch insert triggers a table scan.
 """
 
 import json
@@ -28,19 +33,25 @@ logger = logging.getLogger(__name__)
 # Configuration (inside Docker: hosts are service names)
 # ---------------------------------------------------------------------
 
-# Kafka cluster – PLAINTEXT ports (must match docker-compose; single-broker mode)
+import os  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_loader import get_db_config, get_kafka_config  # noqa: E402
+
+# Kafka and database settings come from the shared config (environment
+# variables set by docker-compose, with defaults for local runs).
 KAFKA_BROKERS = [
-    "kafka-broker-1:9092",
+    s.strip() for s in get_kafka_config()["bootstrap_servers"].split(",") if s.strip()
 ]
 KAFKA_TOPICS = ["edge-iiot-stream", "anomalies", "local-model-updates"]
 GROUP_ID = "timescaledb-collector"
 
-# Database (matches docker-compose + 00_init_database.py)
-DB_HOST = "timescaledb"
-DB_PORT = 5432
-DB_NAME = "flead"
-DB_USER = "flead"
-DB_PASSWORD = "password"
+_db = get_db_config()
+DB_HOST = _db["host"]
+DB_PORT = _db["port"]
+DB_NAME = _db["database"]
+DB_USER = _db["user"]
+DB_PASSWORD = _db["password"]
 
 # Batch behaviour
 BATCH_SIZE = 1000
@@ -190,7 +201,8 @@ class KafkaToTimescaleDB:
                     value           DOUBLE PRECISION,
                     anomaly_score   DOUBLE PRECISION,
                     severity        TEXT,
-                    detection_method TEXT DEFAULT 'random_cut_forest'
+                    detection_method TEXT DEFAULT 'random_cut_forest',
+                    label           INT
                 );
                 SELECT create_hypertable('anomalies', 'ts', if_not_exists => TRUE);
                 CREATE INDEX IF NOT EXISTS idx_anomalies_device_ts ON anomalies (device_id, ts);
@@ -240,68 +252,6 @@ class KafkaToTimescaleDB:
             return False
 
     # --------------------------------------------------------------
-    # Dashboard metrics snapshots
-    # --------------------------------------------------------------
-    def write_dashboard_snapshot(self) -> None:
-        """
-        Compute a small snapshot of the current stream load and store
-        it in dashboard_metrics. Called after each batch insert.
-        """
-        try:
-            cur = self.db_conn.cursor()
-
-            # Total messages ever ingested
-            cur.execute("SELECT COUNT(*) FROM iot_data;")
-            total_messages = cur.fetchone()[0] or 0
-
-            # Activity in last 1 minute
-            cur.execute(
-                """
-                SELECT COUNT(*)
-                FROM iot_data
-                WHERE ts > NOW() - INTERVAL '1 minute';
-                """
-            )
-            last_minute = cur.fetchone()[0] or 0
-
-            # Activity in last 5 minutes
-            cur.execute(
-                """
-                SELECT COUNT(*)
-                FROM iot_data
-                WHERE ts > NOW() - INTERVAL '5 minutes';
-                """
-            )
-            last_5min = cur.fetchone()[0] or 0
-
-            # Insert metrics using the new schema
-            metrics = [
-                ("total_messages", total_messages, "count"),
-                ("messages_last_minute", last_minute, "count"),
-                ("messages_last_5min", last_5min, "count")
-            ]
-
-            cur.executemany(
-                """
-                INSERT INTO dashboard_metrics (timestamp, metric_name, metric_value, metric_unit)
-                VALUES (NOW(), %s, %s, %s);
-                """,
-                [(m[0], m[1], m[2]) for m in metrics]
-            )
-
-            logger.debug(
-                "Dashboard snapshot written: total=%s, 1m=%s, 5m=%s",
-                total_messages,
-                last_minute,
-                last_5min,
-            )
-            cur.close()
-
-        except Exception as e:
-            logger.error("✗ Failed to write dashboard snapshot: %s", e)
-            # don't raise; we don't want to kill the collector because of metrics only
-
-    # --------------------------------------------------------------
     # Insertion
     # --------------------------------------------------------------
     def insert_batches(self) -> None:
@@ -341,11 +291,13 @@ class KafkaToTimescaleDB:
                     anomaly_score = float(msg.get("anomaly_score", msg.get("z_score", 0.0)))
                     severity = msg.get("severity", "info")
                     detection_method = msg.get("detection_method", "random_cut_forest")
-                    anom_tuples.append((ts, device_id, value, anomaly_score, severity, detection_method))
+                    label = msg.get("label")
+                    label = None if label is None else int(float(label))
+                    anom_tuples.append((ts, device_id, value, anomaly_score, severity, detection_method, label))
 
                 execute_values(
                     cur,
-                    "INSERT INTO anomalies (ts, device_id, value, anomaly_score, severity, detection_method) VALUES %s",
+                    "INSERT INTO anomalies (ts, device_id, value, anomaly_score, severity, detection_method, label) VALUES %s",
                     anom_tuples,
                 )
                 self.anomaly_batch = []
@@ -369,9 +321,6 @@ class KafkaToTimescaleDB:
                     model_tuples,
                 )
                 self.model_batch = []
-
-            # Snapshot metrics after insertion
-            self.write_dashboard_snapshot()
 
             self.db_conn.commit()
             logger.info(
@@ -422,7 +371,9 @@ class KafkaToTimescaleDB:
                     # Route to appropriate batch
                     if topic == "edge-iiot-stream":
                         if "device_id" not in data:
-                            data["device_id"] = f"device_{self.total_messages % 2400}"
+                            # Never invent a device id: the reading cannot be attributed
+                            logger.warning("Skipping a reading without device_id")
+                            continue
                         self.iot_batch.append(data)
                     
                     elif topic == "anomalies":

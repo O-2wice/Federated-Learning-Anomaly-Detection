@@ -47,7 +47,8 @@ receivers:
   # Console/log notifications (default for development)
   - name: 'console-notifications'
     webhook_configs:
-      - url: 'http://monitoring-dashboard:5001/api/alerts'
+      # Container port 5000 (5001 is only the host-side mapping)
+      - url: 'http://monitoring-dashboard:5000/api/alerts'
         send_resolved: true
 
   # Slack notifications (configure with your webhook URL)

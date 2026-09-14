@@ -30,7 +30,8 @@ RUN pip3 install --no-cache-dir -r /opt/flink/requirements.txt
 # Make sure these dirs always exist in the image
 RUN mkdir -p /opt/flink/scripts \
            /opt/flink/usrlib \
-           /opt/flink/models/local
+           /opt/flink/models/local \
+    && chown -R flink:flink /opt/flink/models
 
 # Back to flink user (as in base image)
 USER flink

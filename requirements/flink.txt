@@ -1,2 +1,5 @@
 apache-flink==1.18.1
-kafka-python
+kafka-python>=2.0.2,<3.0
+numpy<2.0
+# Robust Random Cut Forest reference implementation (anomaly detection)
+rrcf==0.4.4

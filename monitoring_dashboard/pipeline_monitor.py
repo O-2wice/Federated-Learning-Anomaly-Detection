@@ -9,11 +9,14 @@ from flask import Flask, render_template, jsonify
 import psycopg2
 import subprocess
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+import math
 import os
 import socket
 import logging
+import threading
+import time
 
 # --------------------------------------------------------------------
 # Logging
@@ -82,11 +85,17 @@ LOGICAL_COMPONENTS = [
 # --------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------
+# Failed TimescaleDB connection attempts since start (Prometheus counter)
+DB_CONNECTION_ERRORS = 0
+
+
 def get_db_connection():
     """Return TimescaleDB connection or None."""
+    global DB_CONNECTION_ERRORS
     try:
         return psycopg2.connect(**DB_CONFIG)
     except Exception as e:
+        DB_CONNECTION_ERRORS += 1
         logger.error(f"DB connection failed: {e}")
         return None
 
@@ -274,12 +283,6 @@ def _empty_db_stats():
             "last_5min": 0,
             "latest": None,
         },
-        "dashboard_metrics": {
-            "total": 0,
-            "last_minute": 0,
-            "last_5min": 0,
-            "latest": None,
-        },
     }
 
 
@@ -291,21 +294,28 @@ def get_database_stats():
 
     try:
         with conn.cursor() as cur:
+            # The page refreshes every 2 s and local_models grows by thousands
+            # of rows per minute: its total comes from the dashboard-metrics-updater
+            # snapshot (a full count only when no snapshot is under 2 minutes old),
+            # and the windowed counts use the hypertable's time index.
             cur.execute(
                 """
-                SELECT 
+                SELECT
                     'local_models' AS table_name,
-                    COUNT(*) AS total_records,
-                    COUNT(*) FILTER (
-                        WHERE created_at > NOW() - INTERVAL '1 minute'
-                    ) AS last_minute,
-                    COUNT(*) FILTER (
-                        WHERE created_at > NOW() - INTERVAL '5 minutes'
-                    ) AS last_5min,
-                    MAX(created_at) AS latest_record
-                FROM local_models
+                    COALESCE(
+                        (SELECT metric_value::bigint FROM dashboard_metrics
+                          WHERE metric_name = 'total_local_models_count'
+                            AND timestamp > NOW() - INTERVAL '2 minutes'
+                          ORDER BY timestamp DESC LIMIT 1),
+                        (SELECT COUNT(*) FROM local_models)
+                    ) AS total_records,
+                    (SELECT COUNT(*) FROM local_models
+                      WHERE created_at > NOW() - INTERVAL '1 minute') AS last_minute,
+                    (SELECT COUNT(*) FROM local_models
+                      WHERE created_at > NOW() - INTERVAL '5 minutes') AS last_5min,
+                    (SELECT MAX(created_at) FROM local_models) AS latest_record
                 UNION ALL
-                SELECT 
+                SELECT
                     'federated_models',
                     COUNT(*),
                     COUNT(*) FILTER (
@@ -315,20 +325,7 @@ def get_database_stats():
                         WHERE created_at > NOW() - INTERVAL '5 minutes'
                     ),
                     MAX(created_at)
-                FROM federated_models
-                UNION ALL
-                -- Dashboard metrics = IoT traffic stats from iot_data
-                SELECT 
-                    'dashboard_metrics',
-                    COUNT(*),
-                    COUNT(*) FILTER (
-                        WHERE ts > NOW() - INTERVAL '1 minute'
-                    ),
-                    COUNT(*) FILTER (
-                        WHERE ts > NOW() - INTERVAL '5 minutes'
-                    ),
-                    MAX(ts)
-                FROM iot_data;
+                FROM federated_models;
                 """
             )
 
@@ -472,23 +469,21 @@ def get_status():
     # 2) Database-driven logical health (collector / aggregator / analytics)
     db_stats = get_database_stats()
 
-    # Timescaledb collector: if we've ingested ANY iot/local models, mark running
-    iot_count = 0
+    # Timescaledb collector: running if it wrote readings in the last 2 minutes
+    # (an EXISTS on the time index rather than a count of the whole table)
+    collector_writing = False
     conn = get_db_connection()
     if conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM iot_data;")
-                iot_count = cur.fetchone()[0]
+                cur.execute("SELECT EXISTS (SELECT 1 FROM iot_data WHERE ts > NOW() - INTERVAL '2 minutes')")
+                collector_writing = bool(cur.fetchone()[0])
         except Exception as e:
-            logger.info(f"iot_data count check failed: {e}")
+            logger.info(f"iot_data freshness check failed: {e}")
         finally:
             conn.close()
 
-    if iot_count > 0 or db_stats["local_models"]["total"] > 0:
-        docker_services["timescaledb-collector"] = "running"
-    else:
-        docker_services["timescaledb-collector"] = "unknown"
+    docker_services["timescaledb-collector"] = "running" if collector_writing else "unknown"
 
     # Federated aggregator: look at federated_models table
     if db_stats["federated_models"]["total"] > 0:
@@ -557,7 +552,7 @@ def get_status():
 
     return jsonify(
         {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "docker_services": docker_services,
             "kafka": kafka_stats,
             "flink": flink_jobs,
@@ -572,118 +567,367 @@ def get_status():
 @app.route("/api/health")
 def health_check():
     """Quick health check endpoint."""
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+    return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
 
 
 # --------------------------------------------------------------------
 # Prometheus Metrics Endpoint
 # --------------------------------------------------------------------
+# Fleet-wide aggregates over the large tables come from the latest snapshot
+# that dashboard_metrics_updater.py writes every 15 s, so a scrape (every 10 s)
+# never re-scans iot_data or local_models.
+# (name, type, help, dashboard_metrics.metric_name)
+SNAPSHOT_METRICS = [
+    ("flead_iot_records_total", "counter",
+     "IoT readings stored in TimescaleDB", "total_iot_count"),
+    ("flead_local_models_total", "counter",
+     "Local model updates received by the federated aggregator", "total_local_models_count"),
+    ("flead_anomalies_total", "counter",
+     "Readings flagged by the RRCF anomaly detector", "total_anomalies_count"),
+    ("flead_anomaly_rate", "gauge",
+     "Share of readings in the last hour that were flagged as anomalies", "anomaly_rate_1h"),
+    ("flead_anomaly_attack_share", "gauge",
+     "Share of anomalies flagged in the last hour whose reading is labelled as an attack",
+     "anomaly_attack_share_1h"),
+    ("flead_active_devices", "gauge",
+     "Devices that sent readings in the last 5 minutes", "active_devices_5m"),
+    ("flead_stale_devices_count", "gauge",
+     "Devices with local models but no readings in the last hour", "stale_devices_count"),
+    ("flead_devices_with_models", "gauge",
+     "Devices that have produced at least one local model", "devices_with_models"),
+]
+SNAPSHOT_SQL = (
+    "SELECT DISTINCT ON (metric_name) metric_name, metric_value, "
+    "EXTRACT(EPOCH FROM NOW() - timestamp) "
+    "FROM dashboard_metrics WHERE timestamp > NOW() - INTERVAL '10 minutes' "
+    "ORDER BY metric_name, timestamp DESC"
+)
+
+# Direct queries: small tables, or LIMIT 1 / short time ranges on a hypertable index
+# (name, type, help, SQL returning a single number)
+PROMETHEUS_METRICS = [
+    ("flead_federated_models_total", "counter",
+     "Global model versions produced by federated averaging",
+     "SELECT COUNT(*) FROM federated_models"),
+    ("flead_global_model_train_accuracy", "gauge",
+     "Mean local training accuracy of the devices in the latest aggregation round",
+     "SELECT accuracy FROM federated_models ORDER BY created_at DESC LIMIT 1"),
+    ("flead_global_model_heldout_accuracy", "gauge",
+     "Latest global model accuracy on held-out readings no device trained on",
+     "SELECT model_accuracy FROM model_evaluations WHERE device_id = 'ALL' "
+     "ORDER BY evaluation_timestamp DESC LIMIT 1"),
+    ("flead_global_model_heldout_f1", "gauge",
+     "Latest global model F1 score on held-out readings",
+     "SELECT f1_score FROM model_evaluations WHERE device_id = 'ALL' "
+     "ORDER BY evaluation_timestamp DESC LIMIT 1"),
+    ("flead_global_model_heldout_baseline_accuracy", "gauge",
+     "Accuracy of always predicting benign on the same held-out readings",
+     "SELECT (true_negatives + false_positives)::float / NULLIF(sample_count, 0) "
+     "FROM model_evaluations WHERE device_id = 'ALL' ORDER BY evaluation_timestamp DESC LIMIT 1"),
+    ("flead_models_per_minute", "gauge",
+     "Local model updates per minute over the last 5 minutes",
+     "SELECT COUNT(*) / 5.0 FROM local_models WHERE created_at > NOW() - INTERVAL '5 minutes'"),
+    ("flead_dp_epsilon", "gauge",
+     "Cumulative differential-privacy budget epsilon (delta=1e-5) of the latest global model",
+     "SELECT dp_epsilon FROM federated_models ORDER BY created_at DESC LIMIT 1"),
+]
+
+
 @app.route("/metrics")
 def prometheus_metrics():
     """
-    Expose FLEAD pipeline metrics in Prometheus format.
-    This allows Prometheus to scrape pipeline health metrics.
+    Expose FLEAD pipeline metrics in Prometheus text format.
+
+    Every query runs independently, so one failure does not drop the rest,
+    and each metric carries its own HELP/TYPE lines. Metrics with no value
+    yet (no evaluation has run, or no recent snapshot) are omitted.
     """
-    metrics = []
-    
-    # Get database stats
+    lines = []
+
+    def emit(name, metric_type, help_text, value):
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {metric_type}")
+        if value is not None:
+            lines.append(f"{name} {float(value)}")
+
+    def query(sql, fetch_all=False):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                return cur.fetchall() if fetch_all else cur.fetchone()
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Metrics query failed ({sql[:60]}...): {e}")
+            return [] if fetch_all else None
+
+    conn = get_db_connection()
+    emit("flead_db_up", "gauge", "1 if the monitor can connect to TimescaleDB", 1 if conn else 0)
+    if conn:
+        try:
+            snapshot = {name: (value, age) for name, value, age in query(SNAPSHOT_SQL, fetch_all=True)}
+            for name, metric_type, help_text, key in SNAPSHOT_METRICS:
+                emit(name, metric_type, help_text, snapshot.get(key, (None, None))[0])
+            ages = [age for _, age in snapshot.values()]
+            emit("flead_metrics_snapshot_age_seconds", "gauge",
+                 "Age of the newest dashboard_metrics snapshot written by dashboard-metrics-updater",
+                 min(ages) if ages else None)
+
+            for name, metric_type, help_text, sql in PROMETHEUS_METRICS:
+                row = query(sql)
+                emit(name, metric_type, help_text, row[0] if row else None)
+        finally:
+            conn.close()
+
+    emit("flead_db_connection_errors_total", "counter",
+         "Failed TimescaleDB connection attempts since the monitor started", DB_CONNECTION_ERRORS)
+    lines.append("")
+    return "\n".join(lines), 200, {"Content-Type": "text/plain; version=0.0.4; charset=utf-8"}
+
+
+# --------------------------------------------------------------------
+# Overview API (used by the monitor page)
+# --------------------------------------------------------------------
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+EPSILON_LIMIT = 50.0            # PrivacyBudgetHigh threshold in prometheus/alerts.yml
+LAG_LIMIT = 9000                # readings: one minute of the 150/s stream (FlinkFallingBehind)
+OVERVIEW_CACHE_SECONDS = 3.0    # open pages share one computation
+
+# Web interfaces as published on the host by docker-compose.yml
+PORTALS = [
+    ("Grafana", "http://localhost:3001", "Dashboards"),
+    ("Prometheus", "http://localhost:9090/alerts", "Metrics and alert rules"),
+    ("Alertmanager", "http://localhost:9093", "Routed alerts"),
+    ("Flink", "http://localhost:8161", "Streaming job"),
+    ("Spark", "http://localhost:8086", "Analytics cluster"),
+    ("Spark job", "http://localhost:4040", "Running analytics job"),
+    ("Kafka UI", "http://localhost:8081", "Topics and consumer lag"),
+    ("Device Viewer", "http://localhost:8082", "Per-device data"),
+    ("Jupyter", "http://localhost:8888", "Notebooks"),
+]
+
+# (stage, SQL returning the age in seconds of the newest row, age limit in seconds).
+# Every query is bounded to one day so TimescaleDB only reads recent chunks.
+FRESHNESS_CHECKS = [
+    ("Readings stored",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(ts)) FROM iot_data WHERE ts > NOW() - INTERVAL '1 day'", 60),
+    # Anomalies carry the reading's timestamp, so this age includes Flink's lag
+    ("Anomalies scored",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(ts)) FROM anomalies WHERE ts > NOW() - INTERVAL '1 day'", 300),
+    ("Local models trained",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(created_at)) FROM local_models "
+     "WHERE created_at > NOW() - INTERVAL '1 day'", 600),
+    ("Federated rounds",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(created_at)) FROM federated_models", 300),
+    ("Held-out evaluations",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(evaluation_timestamp)) FROM model_evaluations "
+     "WHERE device_id = 'ALL' AND evaluation_timestamp > NOW() - INTERVAL '1 day'", 600),
+    ("Fleet z-score windows",
+     "SELECT EXTRACT(EPOCH FROM NOW() - MAX(timestamp)) FROM stream_analysis_results "
+     "WHERE timestamp > NOW() - INTERVAL '1 day'", 300),
+]
+
+_overview_cache = {"at": 0.0, "data": None}
+_overview_lock = threading.Lock()
+
+
+def _num(value):
+    """JSON-safe float: Decimal/numpy become float, NaN and infinities become None."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _prometheus_value(expr):
+    """First sample of an instant Prometheus query, or None."""
+    try:
+        import requests  # type: ignore
+
+        resp = requests.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": expr}, timeout=3)
+        result = resp.json()["data"]["result"]
+        return _num(result[0]["value"][1]) if result else None
+    except Exception as e:
+        logger.info(f"Prometheus query failed ({expr}): {e}")
+        return None
+
+
+def _prometheus_alerts():
+    """(pending and firing alerts, whether Prometheus answered)."""
+    try:
+        import requests  # type: ignore
+
+        resp = requests.get(f"{PROMETHEUS_URL}/api/v1/alerts", timeout=3)
+        alerts = resp.json()["data"]["alerts"]
+    except Exception as e:
+        logger.info(f"Prometheus alerts unavailable: {e}")
+        return [], False
+    return [
+        {
+            "name": a.get("labels", {}).get("alertname"),
+            "severity": a.get("labels", {}).get("severity", "info"),
+            "state": a.get("state"),
+            "summary": a.get("annotations", {}).get("summary", ""),
+            "active_at": a.get("activeAt"),
+        }
+        for a in alerts
+    ], True
+
+
+def _rates(rows):
+    """Per-interval rates from the metrics updater's cumulative snapshots."""
+    series = {}
+    for name, ts, value in rows:
+        series.setdefault(name, []).append((ts, float(value)))
+
+    def per(name, scale):
+        # Snapshots are ~15 s apart but the collector inserts in batches, so
+        # rates are taken over at least 60 s to avoid a saw-tooth
+        points = series.get(name, [])
+        out = []
+        start = 0
+        for i in range(1, len(points)):
+            (t0, v0), (t1, v1) = points[start], points[i]
+            if v1 < v0:  # a restart resets the totals
+                start = i
+            elif (t1 - t0).total_seconds() >= 60:
+                out.append([t1.isoformat(), round((v1 - v0) / (t1 - t0).total_seconds() * scale, 2)])
+                start = i
+        return out
+
+    return {
+        "readings_per_s": per("total_iot_count", 1),
+        "anomalies_per_min": per("total_anomalies_count", 60),
+        "local_models_per_min": per("total_local_models_count", 60),
+    }
+
+
+def _overall_status(overview):
+    critical, degraded = [], []
+    if not overview.get("db_up"):
+        critical.append("TimescaleDB is unreachable")
+
+    flink = overview.get("flink") or {}
+    if not any((job.get("status") or "").upper() == "RUNNING" for job in flink.get("jobs") or []):
+        critical.append("The Flink training job is not running")
+
+    for item in overview.get("freshness") or []:
+        age, limit = item["age_s"], item["limit_s"]
+        if age is None or age <= limit:
+            continue  # no rows yet (starting up) or fresh
+        message = f"{item['stage']}: newest is {age / 60:.0f} min old"
+        (critical if item["stage"] == "Readings stored" else degraded).append(message)
+
+    lag = flink.get("lag")
+    if lag is not None and lag > LAG_LIMIT:
+        degraded.append(f"Flink is {lag:,.0f} readings behind the stream")
+
+    alerts = overview.get("alerts") or {}
+    firing = [a for a in alerts.get("active") or [] if a.get("state") == "firing"]
+    if firing:
+        target = critical if any(a.get("severity") == "critical" for a in firing) else degraded
+        target.append(f"{len(firing)} alert(s) firing: " + ", ".join(a["name"] for a in firing[:3]))
+    if not alerts.get("prometheus_up"):
+        degraded.append("Prometheus is unreachable")
+
+    level = "critical" if critical else "degraded" if degraded else "healthy"
+    return {"level": level, "reasons": critical + degraded}
+
+
+def build_overview():
+    """Everything the monitor page shows, from bounded queries only."""
+    overview = {"generated_at": datetime.now(timezone.utc).isoformat(), "db_up": False, "freshness": [],
+                "heldout_history": [], "rounds": [], "snapshot": {}, "rates": _rates([])}
+
     conn = get_db_connection()
     if conn:
         try:
-            cur = conn.cursor()
-            
-            # Total IoT records
-            cur.execute("SELECT COUNT(*) FROM iot_data")
-            iot_count = cur.fetchone()[0] or 0
-            metrics.append(f"flead_iot_records_total {iot_count}")
-            
-            # Total local models
-            cur.execute("SELECT COUNT(*) FROM local_models")
-            local_models = cur.fetchone()[0] or 0
-            metrics.append(f"flead_local_models_total {local_models}")
-            
-            # Total federated models
-            cur.execute("SELECT COUNT(*) FROM federated_models")
-            federated_models = cur.fetchone()[0] or 0
-            metrics.append(f"flead_federated_models_total {federated_models}")
-            
-            # Latest global model accuracy
-            cur.execute("""
-                SELECT accuracy FROM federated_models 
-                ORDER BY created_at DESC LIMIT 1
-            """)
-            result = cur.fetchone()
-            accuracy = result[0] if result else 0
-            metrics.append(f"flead_global_model_accuracy {accuracy}")
-            
-            # Total anomalies
-            cur.execute("SELECT COUNT(*) FROM anomalies")
-            anomalies = cur.fetchone()[0] or 0
-            metrics.append(f"flead_anomalies_total {anomalies}")
-            
-            # Anomaly rate (last hour)
-            cur.execute("""
-                SELECT 
-                    COUNT(*) FILTER (WHERE severity IN ('medium', 'high', 'critical')) * 1.0 / 
-                    NULLIF(COUNT(*), 0)
-                FROM anomalies 
-                WHERE detected_at > NOW() - INTERVAL '1 hour'
-            """)
-            result = cur.fetchone()
-            anomaly_rate = result[0] if result and result[0] else 0
-            metrics.append(f"flead_anomaly_rate {anomaly_rate}")
-            
-            # Active devices (last 5 minutes)
-            cur.execute("""
-                SELECT COUNT(DISTINCT device_id) FROM iot_data 
-                WHERE timestamp > NOW() - INTERVAL '5 minutes'
-            """)
-            active_devices = cur.fetchone()[0] or 0
-            metrics.append(f"flead_active_devices {active_devices}")
-            
-            # Stale devices (no data in last hour)
-            cur.execute("""
-                SELECT COUNT(DISTINCT device_id) FROM local_models 
-                WHERE device_id NOT IN (
-                    SELECT DISTINCT device_id FROM iot_data 
-                    WHERE timestamp > NOW() - INTERVAL '1 hour'
+            with conn.cursor() as cur:
+                overview["db_up"] = True
+                for stage, sql, limit in FRESHNESS_CHECKS:
+                    try:
+                        cur.execute(sql)
+                        age = _num(cur.fetchone()[0])
+                    except Exception as e:
+                        conn.rollback()
+                        logger.info(f"Freshness query failed for {stage}: {e}")
+                        age = None
+                    overview["freshness"].append({"stage": stage, "age_s": age, "limit_s": limit})
+
+                cur.execute(
+                    "SELECT model_version, model_accuracy, f1_score, precision, recall, "
+                    "(true_negatives + false_positives)::float / NULLIF(sample_count, 0), "
+                    "sample_count, evaluation_timestamp FROM model_evaluations "
+                    "WHERE device_id = 'ALL' ORDER BY evaluation_timestamp DESC LIMIT 60"
                 )
-            """)
-            stale_devices = cur.fetchone()[0] or 0
-            metrics.append(f"flead_stale_devices_count {stale_devices}")
-            
-            # Models per minute (last 5 min)
-            cur.execute("""
-                SELECT COUNT(*) / 5.0 FROM local_models 
-                WHERE created_at > NOW() - INTERVAL '5 minutes'
-            """)
-            result = cur.fetchone()
-            models_per_min = result[0] if result else 0
-            metrics.append(f"flead_models_per_minute {models_per_min}")
-            
-            # Unique devices with models
-            cur.execute("SELECT COUNT(DISTINCT device_id) FROM local_models")
-            unique_devices = cur.fetchone()[0] or 0
-            metrics.append(f"flead_devices_with_models {unique_devices}")
-            
-            cur.close()
-            conn.close()
+                overview["heldout_history"] = [
+                    {"version": str(version), "accuracy": _num(acc), "f1": _num(f1),
+                     "precision": _num(prec), "recall": _num(rec), "baseline": _num(base),
+                     "samples": samples, "at": at.isoformat()}
+                    for version, acc, f1, prec, rec, base, samples, at in reversed(cur.fetchall())
+                ]
+
+                cur.execute(
+                    "SELECT global_version, num_devices, total_samples, accuracy, mean_update_cosine, "
+                    "num_clusters, dp_noise_std, dp_clipped_updates, dp_epsilon, created_at "
+                    "FROM federated_models ORDER BY created_at DESC LIMIT 12"
+                )
+                overview["rounds"] = [
+                    {"version": version, "devices": devices, "samples": samples,
+                     "train_accuracy": _num(train_acc), "agreement": _num(cosine), "clusters": clusters,
+                     "dp_noise_std": _num(noise), "dp_clipped": clipped, "epsilon": _num(epsilon),
+                     "rollback": devices == 0, "at": at.isoformat()}
+                    for version, devices, samples, train_acc, cosine, clusters, noise, clipped, epsilon, at
+                    in cur.fetchall()
+                ]
+
+                cur.execute(SNAPSHOT_SQL)
+                overview["snapshot"] = {name: _num(value) for name, value, _age in cur.fetchall()}
+
+                cur.execute(
+                    "SELECT metric_name, timestamp, metric_value FROM dashboard_metrics "
+                    "WHERE metric_name IN ('total_iot_count', 'total_anomalies_count', 'total_local_models_count') "
+                    "AND timestamp > NOW() - INTERVAL '30 minutes' ORDER BY metric_name, timestamp"
+                )
+                overview["rates"] = _rates(cur.fetchall())
         except Exception as e:
-            logger.error(f"Error getting metrics: {e}")
-            if conn:
-                conn.close()
-    
-    # Add metadata
-    metrics.insert(0, "# HELP flead_iot_records_total Total IoT data records in TimescaleDB")
-    metrics.insert(1, "# TYPE flead_iot_records_total counter")
-    metrics.insert(3, "# HELP flead_local_models_total Total local models trained")
-    metrics.insert(4, "# TYPE flead_local_models_total counter")
-    metrics.insert(6, "# HELP flead_federated_models_total Total federated global models")
-    metrics.insert(7, "# TYPE flead_federated_models_total counter")
-    metrics.insert(9, "# HELP flead_global_model_accuracy Current global model accuracy")
-    metrics.insert(10, "# TYPE flead_global_model_accuracy gauge")
-    
-    return "\n".join(metrics), 200, {"Content-Type": "text/plain; charset=utf-8"}
+            conn.rollback()
+            logger.error(f"Overview query failed: {e}")
+        finally:
+            conn.close()
+
+    overview["flink"] = {
+        "jobs": get_flink_jobs(),
+        # Readings pulled from Kafka per second; under backpressure this is the processing rate
+        "consumed_per_s": _prometheus_value(
+            "sum(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_consumed_rate)"),
+        "lag": _prometheus_value(
+            "max(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max)"),
+        "backpressured": _prometheus_value("max(flink_taskmanager_job_task_isBackPressured)"),
+    }
+
+    active, prometheus_up = _prometheus_alerts()
+    overview["alerts"] = {"prometheus_up": prometheus_up, "active": active,
+                          "received": list(reversed(RECEIVED_ALERTS[-10:]))}
+    overview["services"] = {
+        name: "running" if _tcp_check(host, port, timeout=0.5) else "stopped"
+        for name, (host, port) in TCP_SERVICES.items()
+    }
+    overview["portals"] = [{"name": n, "url": u, "purpose": p} for n, u, p in PORTALS]
+    overview["limits"] = {"epsilon": EPSILON_LIMIT, "lag": LAG_LIMIT}
+    overview["status"] = _overall_status(overview)
+    return overview
+
+
+@app.route("/api/overview")
+def api_overview():
+    with _overview_lock:
+        if _overview_cache["data"] is None or time.time() - _overview_cache["at"] > OVERVIEW_CACHE_SECONDS:
+            _overview_cache["data"] = build_overview()
+            _overview_cache["at"] = time.time()
+        return jsonify(_overview_cache["data"])
 
 
 # --------------------------------------------------------------------
@@ -703,7 +947,7 @@ def receive_alerts():
         if data:
             for alert in data.get("alerts", []):
                 alert_entry = {
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "status": alert.get("status", "unknown"),
                     "alertname": alert.get("labels", {}).get("alertname", "unknown"),
                     "severity": alert.get("labels", {}).get("severity", "info"),

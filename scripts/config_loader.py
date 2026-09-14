@@ -71,6 +71,29 @@ def get_kafka_config() -> Dict[str, str]:
     }
 
 
+# Device CSV layout, shared by the data converter (writes it), the Kafka
+# producer (streams the first rows) and Spark (evaluates on the rest).
+# Rows in every device_*.csv are timestamped one second apart from this start.
+DEVICE_CSV_START = "2025-01-01 00:00:00"
+
+
+def get_stream_config() -> Dict[str, Any]:
+    """
+    Train / held-out split of each device file.
+
+    The producer streams only the first `stream_rows_per_device` rows (the
+    readings local models train on); Spark evaluates the global model on the
+    remaining rows, which no device has trained on. Devices have ~827 rows, so
+    the default 660 is an 80/20 split.
+
+    Environment override: STREAM_ROWS_PER_DEVICE
+    """
+    return {
+        "stream_rows_per_device": int(os.getenv("STREAM_ROWS_PER_DEVICE", "660")),
+        "device_csv_start": DEVICE_CSV_START,
+    }
+
+
 def get_grafana_config() -> Dict[str, str]:
     """
     Get Grafana configuration based on environment.

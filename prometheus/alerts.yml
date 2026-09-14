@@ -1,55 +1,37 @@
 # FLEAD Pipeline Alert Rules
-# Monitors model accuracy, pipeline health, and system resources
+#
+# Every expression uses a metric that is actually scraped:
+#   flead_*                  monitoring-dashboard /metrics (TimescaleDB-backed)
+#   flink_*                  Flink Prometheus reporter (port 9249)
+#   metrics_master_*         Spark master Prometheus servlet
+#   up                       Prometheus scrape health
+# The previous file referenced node_exporter / cAdvisor metrics and a DB error
+# counter that nothing exported, so three rules could never fire.
 
 groups:
-  - name: flead_pipeline_alerts
+  - name: flead_model_alerts
     interval: 30s
     rules:
-      # Model Accuracy Degradation Alert
-      - alert: ModelAccuracyDegradation
-        expr: flead_global_model_accuracy < 0.5
-        for: 5m
+      - alert: GlobalModelBelowBaseline
+        expr: flead_global_model_heldout_accuracy < flead_global_model_heldout_baseline_accuracy
+        for: 15m
         labels:
           severity: warning
           component: federated-learning
         annotations:
-          summary: "Global model accuracy below 50%"
-          description: "The federated global model accuracy has dropped to {{ $value | printf \"%.2f\" }}. Consider investigating device contributions or data quality."
+          summary: "Global model is no better than always predicting benign"
+          description: "Held-out accuracy {{ $value | printf \"%.3f\" }} is below the always-benign baseline."
 
-      # Model Accuracy Critical
-      - alert: ModelAccuracyCritical
-        expr: flead_global_model_accuracy < 0.3
-        for: 2m
+      - alert: GlobalModelLowF1
+        expr: flead_global_model_heldout_f1 < 0.5
+        for: 15m
         labels:
-          severity: critical
+          severity: warning
           component: federated-learning
         annotations:
-          summary: "CRITICAL: Global model accuracy critically low"
-          description: "Global model accuracy is {{ $value | printf \"%.2f\" }}. Immediate investigation required."
+          summary: "Global model held-out F1 below 0.5"
+          description: "Held-out F1 is {{ $value | printf \"%.3f\" }}. Check device participation and local training."
 
-      # High Anomaly Rate Alert
-      - alert: HighAnomalyRate
-        expr: flead_anomaly_rate > 0.15
-        for: 5m
-        labels:
-          severity: warning
-          component: anomaly-detection
-        annotations:
-          summary: "Anomaly rate above 15%"
-          description: "Anomaly detection rate is {{ $value | printf \"%.2f\" }}. This may indicate sensor issues or a real problem."
-
-      # Low Training Rate Alert
-      - alert: LowTrainingRate
-        expr: rate(flead_local_models_total[5m]) < 0.5
-        for: 10m
-        labels:
-          severity: warning
-          component: flink-training
-        annotations:
-          summary: "Low local model training rate"
-          description: "Local model training rate has dropped to {{ $value | printf \"%.2f\" }} models/minute."
-
-      # No New Federated Models
       - alert: NoFederatedModels
         expr: increase(flead_federated_models_total[30m]) == 0
         for: 30m
@@ -57,10 +39,44 @@ groups:
           severity: warning
           component: federated-aggregation
         annotations:
-          summary: "No new federated models in 30 minutes"
-          description: "The federated aggregator has not produced new global models. Check aggregator health."
+          summary: "No new global models in 30 minutes"
+          description: "The federated aggregator has not produced a new global model version. Check aggregator health."
 
-      # Stale Devices Alert
+      - alert: LowTrainingRate
+        # Only once training has started: devices need ~20 readings (about
+        # 5 minutes) before their first local round
+        expr: flead_models_per_minute < 5 and on() flead_local_models_total > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: flink-training
+        annotations:
+          summary: "Low local model training rate"
+          description: "Only {{ $value | printf \"%.1f\" }} local model updates per minute."
+
+      - alert: PrivacyBudgetHigh
+        expr: flead_dp_epsilon > 50
+        for: 5m
+        labels:
+          severity: info
+          component: federated-learning
+        annotations:
+          summary: "Differential-privacy budget above epsilon 50"
+          description: "Cumulative epsilon is {{ $value | printf \"%.1f\" }} (delta=1e-5); the formal privacy guarantee is weak."
+
+  - name: flead_pipeline_alerts
+    interval: 30s
+    rules:
+      - alert: HighAnomalyRate
+        expr: flead_anomaly_rate > 0.15
+        for: 5m
+        labels:
+          severity: warning
+          component: anomaly-detection
+        annotations:
+          summary: "More than 15% of readings flagged as anomalies"
+          description: "{{ $value | humanizePercentage }} of readings in the last hour were flagged."
+
       - alert: StaleDevices
         expr: flead_stale_devices_count > 100
         for: 15m
@@ -69,51 +85,102 @@ groups:
           component: data-pipeline
         annotations:
           summary: "Many devices are stale"
-          description: "{{ $value }} devices have not sent data recently. Check Kafka producer and data flow."
+          description: "{{ $value }} devices have local models but sent no readings in the last hour. Check the Kafka producer."
 
-      # Flink Job Failed
-      - alert: FlinkJobFailed
-        expr: flink_jobmanager_job_uptime < 60
-        for: 2m
-        labels:
-          severity: critical
-          component: flink
-        annotations:
-          summary: "Flink job may have restarted or failed"
-          description: "Flink job uptime is very low, indicating recent restart or failure."
-
-      # Database Connection Issues
-      - alert: DatabaseConnectionIssues
-        expr: flead_db_connection_errors > 5
-        for: 5m
+      - alert: DatabaseConnectionErrors
+        expr: increase(flead_db_connection_errors_total[5m]) > 5
+        for: 1m
         labels:
           severity: warning
           component: timescaledb
         annotations:
-          summary: "Database connection errors detected"
-          description: "{{ $value }} database connection errors in the last 5 minutes."
+          summary: "Repeated TimescaleDB connection failures"
+          description: "{{ $value | printf \"%.0f\" }} failed connection attempts in the last 5 minutes."
 
-  - name: system_alerts
-    interval: 60s
-    rules:
-      # High Memory Usage
-      - alert: HighMemoryUsage
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+      - alert: DatabaseUnreachable
+        expr: flead_db_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: timescaledb
+        annotations:
+          summary: "Monitoring cannot reach TimescaleDB"
+          description: "The monitoring dashboard has not been able to connect to TimescaleDB for 2 minutes."
+
+      # Row totals, device counts and the anomaly rate come from snapshots
+      # written by dashboard-metrics-updater; without them those metrics go absent.
+      - alert: MetricsSnapshotStale
+        expr: flead_metrics_snapshot_age_seconds > 120 or on() (flead_db_up == 1 and on() absent(flead_metrics_snapshot_age_seconds))
         for: 5m
         labels:
           severity: warning
+          component: data-pipeline
+        annotations:
+          summary: "No recent dashboard_metrics snapshot"
+          description: "dashboard-metrics-updater has not written KPI snapshots recently; fleet totals, device counts and the anomaly rate are stale or missing. Check its container logs."
+
+  - name: flead_platform_alerts
+    interval: 30s
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
           component: infrastructure
         annotations:
-          summary: "High memory usage detected"
-          description: "Memory usage is above 90% on {{ $labels.instance }}."
+          summary: "{{ $labels.job }} metrics endpoint is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }} ({{ $labels.job }})."
 
-      # Container Restart
-      - alert: ContainerRestarting
-        expr: increase(container_restart_count[1h]) > 3
+      - alert: FlinkJobRecentlyRestarted
+        # flink_jobmanager_job_uptime is in milliseconds
+        expr: flink_jobmanager_job_uptime < 60000
+        for: 2m
+        labels:
+          severity: warning
+          component: flink
+        annotations:
+          summary: "Flink job restarted"
+          description: "The Flink training job has been running for less than a minute."
+
+      - alert: FlinkJobRestarting
+        expr: increase(flink_jobmanager_job_numRestarts[1h]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          component: flink
+        annotations:
+          summary: "Flink job restarting repeatedly"
+          description: "{{ $value | printf \"%.0f\" }} restarts of the Flink training job in the last hour."
+
+      - alert: FlinkTaskManagerHeapHigh
+        expr: flink_taskmanager_Status_JVM_Memory_Heap_Used / flink_taskmanager_Status_JVM_Memory_Heap_Max > 0.9
         for: 5m
         labels:
           severity: warning
-          component: docker
+          component: flink
         annotations:
-          summary: "Container restarting frequently"
-          description: "Container {{ $labels.name }} has restarted {{ $value }} times in the last hour."
+          summary: "Flink TaskManager heap above 90%"
+          description: "TaskManager heap usage is {{ $value | humanizePercentage }}."
+
+      - alert: FlinkFallingBehind
+        # Readings waiting in Kafka for the training job; 9,000 is one minute
+        # of the 150 readings/s stream
+        expr: max(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max) > 9000
+        for: 10m
+        labels:
+          severity: warning
+          component: flink
+        annotations:
+          summary: "Flink is falling behind the stream"
+          description: "{{ $value | printf \"%.0f\" }} readings are waiting in Kafka for the Flink job, so anomalies and local models arrive late."
+
+      - alert: SparkWorkerLost
+        expr: metrics_master_aliveWorkers_Value < 1
+        for: 2m
+        labels:
+          severity: critical
+          component: spark
+        annotations:
+          summary: "No alive Spark workers"
+          description: "The Spark master reports no alive workers; analytics and evaluation have stopped."

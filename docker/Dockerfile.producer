@@ -1,6 +1,6 @@
 # Dockerfile.producer
 # Kafka Producer Service
-# Reads CSV files and streams to Kafka (single-broker)
+# Streams the device CSVs to the single Kafka broker
 
 FROM python:3.10-slim
 
@@ -9,14 +9,8 @@ WORKDIR /app
 # Make pip more tolerant of slow connections
 ENV PIP_DEFAULT_TIMEOUT=300
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy service-specific requirements
+# Copy service-specific requirements (kafka-python only: the producer reads
+# the CSVs with the standard library, so no compiler or numeric packages)
 COPY requirements/producer.txt requirements.txt
 
 # Install ONLY the Python deps this service needs
@@ -27,7 +21,6 @@ COPY scripts/config_loader.py ./scripts/
 COPY scripts/02_kafka_producer.py ./scripts/
 
 # Data is mounted via volume in docker-compose, not copied
-# COPY data/processed ./data/processed/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -38,5 +31,5 @@ ENV DATA_PATH=/app/data/processed
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "from kafka import KafkaProducer; KafkaProducer(bootstrap_servers=['kafka-broker-1:9092'])" || exit 1
 
-# Run single-broker producer (distributes 2400 devices to broker 1)
-CMD ["python", "scripts/02_kafka_producer.py", "--source", "/app/data/processed", "--rate", "10"]
+# Stream all 2,400 devices to the broker (docker-compose passes the same command)
+CMD ["python", "scripts/02_kafka_producer.py", "--source", "/app/data/processed", "--rate", "150"]

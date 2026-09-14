@@ -1,5 +1,1 @@
-numpy
-pandas
-kafka-python
-python-dotenv
-requests
+kafka-python>=2.0.2,<3.0

@@ -1,871 +1,251 @@
 """
 Flink Local Model Training Job
-Real-time streaming anomaly detection and local model training per device
 
-Anomaly Detection Method: Random Cut Forest (RCF)
-- Streaming-friendly unsupervised anomaly detection
-- No need for pre-defined thresholds based on distribution assumptions
-- Automatically adapts to data patterns
+Real-time processing of the IoT stream, one reading at a time:
 
-NOTE: This script runs INSIDE the Flink Docker container, not on the host machine.
-The Docker image (flink:1.18-java11) contains all necessary Java/Flink dependencies.
+1. Anomaly detection with a Robust Random Cut Forest (RRCF) over all
+   standardized features. Each Flink worker keeps one shared forest over the
+   recent readings of the devices it serves, so every reading is compared with
+   current fleet traffic. Per-device adaptive thresholds turn scores into
+   anomalies, published to the `anomalies` topic with the reading's label.
+2. Federated local training: each device trains a logistic regression on its
+   recent labelled readings, starting from the latest global FedAvg model, and
+   publishes its parameters to `local-model-updates` for the aggregator.
 
-To submit this job to Flink:
-  docker exec flink-jobmanager flink run -py /opt/flink/scripts/03_flink_local_training.py
+The models themselves live in flink_models.py (no PyFlink dependency, unit
+tested); this file wires them into the Flink job.
 
-For development/testing, see: scripts/flink_local_training_simulator.py
+NOTE: runs INSIDE the Flink cluster. Submitted by pipeline_orchestrator.py:
+  docker exec flink-jobmanager flink run -d -py /opt/flink/scripts/03_flink_local_training.py
 """
 
 import json
 import logging
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
-import numpy as np
-from collections import defaultdict
+import os
 import sys
-import pickle
+from collections import defaultdict, deque
+from datetime import datetime
 from pathlib import Path
-import os  # for env + paths
-import random
+from typing import Any, Dict, List, Optional
 
-# Try to import Flink (will be available in Docker container)
+import numpy as np
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
 try:
-    from pyflink.datastream import StreamExecutionEnvironment
-    from pyflink.datastream.functions import MapFunction
-    from pyflink.common.serialization import SimpleStringSchema
-    from pyflink.datastream.connectors.kafka import (
-        KafkaSource,
-        KafkaOffsetsInitializer,
-        KafkaSink,
-        KafkaRecordSerializationSchema,
-    )
-    from pyflink.common.typeinfo import Types
     from pyflink.common import WatermarkStrategy
-    FLINK_AVAILABLE = True
+    from pyflink.common.serialization import SimpleStringSchema
+    from pyflink.common.typeinfo import Types
+    from pyflink.datastream import StreamExecutionEnvironment
+    from pyflink.datastream.connectors.kafka import (
+        KafkaOffsetsInitializer,
+        KafkaRecordSerializationSchema,
+        KafkaSink,
+        KafkaSource,
+    )
+    from pyflink.datastream.functions import MapFunction, RuntimeContext
 except ImportError:
-    FLINK_AVAILABLE = False
-    print("ERROR: Flink not available. This script MUST run inside Flink Docker container.")
-    print("       This is NOT a host-executable script.")
-    print("")
-    print("To run this job, submit it to Flink:")
-    print("  docker exec flink-jobmanager flink run -py /opt/flink/scripts/03_flink_local_training.py")
-    print("")
-    print("For local testing/simulation, use: scripts/flink_local_training_simulator.py")
+    print("ERROR: PyFlink is not available. This job runs inside the Flink Docker cluster:")
+    print("  docker exec flink-jobmanager flink run -d -py /opt/flink/scripts/03_flink_local_training.py")
     sys.exit(1)
+
+import flink_models as fm  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------
-# Kafka configuration
+# Configuration
 # -------------------------------------------------------------------
-# Prefer env var (so Docker compose can control it), else sane defaults
-ENV_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
-
-if ENV_BOOTSTRAP:
-    KAFKA_BROKER = ENV_BOOTSTRAP
-    logger.info(f"KAFKA_BOOTSTRAP_SERVERS from env: {KAFKA_BROKER}")
-else:
-    # INSIDE DOCKER NETWORK: use PLAINTEXT ports (9092) on each broker
-    # Host mapping to 9092 is only for clients on the host.
-    KAFKA_BROKER = "kafka-broker-1:9092"
-    logger.info(f"Using default internal Kafka bootstrap: {KAFKA_BROKER}")
-
+KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-broker-1:9092")
 INPUT_TOPIC = "edge-iiot-stream"
 ANOMALY_OUTPUT_TOPIC = "anomalies"
 MODEL_UPDATE_TOPIC = "local-model-updates"
 
-WINDOW_SIZE_SECONDS = 30
-# RCF anomaly score threshold (0-1 scale, higher = more anomalous)
-# Base threshold - will be adjusted adaptively per device
-BASE_ANOMALY_THRESHOLD = 0.4
-MODEL_TRAINING_INTERVAL_ROWS = 30   # Train model every 30 rows per device (optimized from 50)
-MODEL_TRAINING_INTERVAL_SECONDS = 45  # OR every 45 seconds (optimized from 60)
+# Shared RRCF per Flink worker (see docs/RCF_EXPLAINED.md for the evaluation)
+RCF_NUM_TREES = int(os.getenv("FLEAD_RCF_TREES", "4"))
+RCF_TREE_SIZE = int(os.getenv("FLEAD_RCF_TREE_SIZE", "256"))
 
-# -------------------------------------------------------------------
-# Adaptive Threshold Configuration
-# -------------------------------------------------------------------
-ADAPTIVE_THRESHOLD_ENABLED = True
-THRESHOLD_ADAPTATION_WINDOW = 100   # Number of samples to consider for adaptation
-MIN_THRESHOLD = 0.2                 # Minimum allowed threshold
-MAX_THRESHOLD = 0.8                 # Maximum allowed threshold
-TARGET_ANOMALY_RATE = 0.05          # Target 5% anomaly rate for balanced detection
-THRESHOLD_ADJUSTMENT_FACTOR = 0.02  # How much to adjust per adaptation
+# Local training trigger: every 30 new readings, once 20 are buffered. A device
+# receives a reading about every 16 s, so it retrains about every 8 minutes:
+# roughly 5 trainings/s fleet-wide and 300 devices per 60 s federated round.
+# The former 45 s time trigger retrained after ~3 readings (~42 trainings/s at
+# ~9 ms each) and held Flink at ~105 readings/s while 150/s were produced.
+# The time trigger remains as a fallback for devices that stream slowly.
+MODEL_TRAINING_INTERVAL_ROWS = 30
+MODEL_TRAINING_INTERVAL_SECONDS = 900
+LOCAL_WINDOW_SIZE = 200
+MIN_TRAIN_SAMPLES = 20
 
-# -------------------------------------------------------------------
-# Random Cut Forest Configuration
-# -------------------------------------------------------------------
-RCF_NUM_TREES = 50          # Number of trees in the forest
-RCF_TREE_SIZE = 256         # Max samples per tree
-RCF_SHINGLE_SIZE = 4        # Sliding window for temporal patterns
-
-# -------------------------------------------------------------------
-# SGD Configuration
-# -------------------------------------------------------------------
-# Use a writable directory inside Flink container
+# Per-device parameter files are written only on request: nothing in the
+# pipeline reads them (parameters travel on local-model-updates)
+SAVE_LOCAL_MODELS = os.getenv("FLEAD_SAVE_LOCAL_MODELS", "").lower() in ("1", "true", "yes")
 MODEL_DIR = Path(os.getenv("LOCAL_MODEL_DIR", "/opt/flink/models/local"))
-
-LEARNING_RATE = 0.001  # Reduced from 0.01
-BATCH_SIZE = 50
-
-
-# -------------------------------------------------------------------
-# Random Cut Forest Implementation
-# -------------------------------------------------------------------
-class RandomCutTree:
-    """A single Random Cut Tree for anomaly detection"""
-    
-    def __init__(self, max_size: int = 256):
-        self.max_size = max_size
-        self.points: List[np.ndarray] = []
-        self.bounding_box: Optional[Tuple[np.ndarray, np.ndarray]] = None
-    
-    def insert(self, point: np.ndarray) -> None:
-        """Insert a point into the tree"""
-        self.points.append(point.copy())
-        
-        # Update bounding box
-        if self.bounding_box is None:
-            self.bounding_box = (point.copy(), point.copy())
-        else:
-            self.bounding_box = (
-                np.minimum(self.bounding_box[0], point),
-                np.maximum(self.bounding_box[1], point)
-            )
-        
-        # Remove oldest point if tree is full
-        if len(self.points) > self.max_size:
-            self.points.pop(0)
-            self._rebuild_bounding_box()
-    
-    def _rebuild_bounding_box(self) -> None:
-        """Rebuild bounding box from all points"""
-        if not self.points:
-            self.bounding_box = None
-            return
-        points_array = np.array(self.points)
-        self.bounding_box = (
-            np.min(points_array, axis=0),
-            np.max(points_array, axis=0)
-        )
-    
-    def displacement(self, point: np.ndarray) -> float:
-        """
-        Calculate the displacement score for a point.
-        Higher displacement = more anomalous.
-        """
-        if len(self.points) < 2 or self.bounding_box is None:
-            return 0.0
-        
-        # Calculate how much the bounding box would change
-        new_min = np.minimum(self.bounding_box[0], point)
-        new_max = np.maximum(self.bounding_box[1], point)
-        
-        old_span = self.bounding_box[1] - self.bounding_box[0]
-        new_span = new_max - new_min
-        
-        # Avoid division by zero
-        old_span = np.where(old_span < 1e-10, 1e-10, old_span)
-        
-        # Displacement is the relative increase in bounding box
-        displacement = np.sum(np.abs(new_span - old_span) / old_span)
-        
-        return float(displacement)
-    
-    def collusive_displacement(self, point: np.ndarray) -> float:
-        """
-        Calculate CoDisp (Collusive Displacement) - the key RCF metric.
-        This measures how the point affects the model complexity.
-        """
-        if len(self.points) < 5:
-            return 0.0
-        
-        # Calculate distance to nearest neighbors
-        points_array = np.array(self.points)
-        distances = np.linalg.norm(points_array - point, axis=1)
-        
-        # Get average distance to 5 nearest neighbors
-        k = min(5, len(distances))
-        nearest_distances = np.partition(distances, k-1)[:k]
-        avg_neighbor_dist = np.mean(nearest_distances)
-        
-        # Get average distance between all points
-        if len(self.points) > 1:
-            all_distances = []
-            for i, p in enumerate(self.points[:min(20, len(self.points))]):
-                for q in self.points[i+1:min(20, len(self.points))]:
-                    all_distances.append(np.linalg.norm(p - q))
-            avg_all_dist = np.mean(all_distances) if all_distances else 1.0
-        else:
-            avg_all_dist = 1.0
-        
-        # Avoid division by zero
-        if avg_all_dist < 1e-10:
-            avg_all_dist = 1e-10
-        
-        # CoDisp score: ratio of point's isolation to average density
-        codisp = avg_neighbor_dist / avg_all_dist
-        
-        return float(codisp)
-
-
-class RandomCutForest:
-    """
-    Random Cut Forest for streaming anomaly detection.
-    
-    RCF is an unsupervised algorithm that:
-    - Maintains a forest of random trees
-    - Each tree has a bounded size (old points are removed)
-    - Anomaly score is based on how much a point "displaces" the model
-    """
-    
-    def __init__(self, num_trees: int = 50, tree_size: int = 256, shingle_size: int = 4):
-        self.num_trees = num_trees
-        self.tree_size = tree_size
-        self.shingle_size = shingle_size
-        self.trees = [RandomCutTree(max_size=tree_size) for _ in range(num_trees)]
-        self.shingle_buffer: List[float] = []
-        self.points_seen = 0
-        self.score_history: List[float] = []
-    
-    def _create_shingle(self, value: float) -> Optional[np.ndarray]:
-        """Create a shingle (sliding window) from the value stream"""
-        self.shingle_buffer.append(value)
-        
-        if len(self.shingle_buffer) > self.shingle_size * 2:
-            self.shingle_buffer = self.shingle_buffer[-self.shingle_size * 2:]
-        
-        if len(self.shingle_buffer) < self.shingle_size:
-            return None
-        
-        # Create shingle from last N values
-        shingle = np.array(self.shingle_buffer[-self.shingle_size:])
-        return shingle
-    
-    def update(self, value: float) -> float:
-        """
-        Update the forest with a new value and return anomaly score.
-        
-        Returns:
-            Anomaly score between 0 and 1 (higher = more anomalous)
-        """
-        shingle = self._create_shingle(value)
-        
-        if shingle is None:
-            return 0.0
-        
-        self.points_seen += 1
-        
-        # Calculate anomaly score across all trees
-        scores = []
-        for tree in self.trees:
-            # Use combination of displacement and collusive displacement
-            disp = tree.displacement(shingle)
-            codisp = tree.collusive_displacement(shingle)
-            
-            # Combined score
-            score = 0.3 * disp + 0.7 * codisp
-            scores.append(score)
-            
-            # Update tree with new point
-            tree.insert(shingle)
-        
-        # Average score across trees
-        raw_score = np.mean(scores)
-        
-        # Track score history for normalization
-        self.score_history.append(raw_score)
-        if len(self.score_history) > 1000:
-            self.score_history = self.score_history[-500:]
-        
-        # Normalize score to 0-1 range based on history
-        if len(self.score_history) > 10:
-            score_mean = np.mean(self.score_history)
-            score_std = np.std(self.score_history)
-            if score_std > 0:
-                # Convert to percentile-like score
-                normalized = (raw_score - score_mean) / (score_std * 3) + 0.5
-                normalized = np.clip(normalized, 0, 1)
-            else:
-                normalized = 0.5
-        else:
-            # Not enough history, use raw score
-            normalized = min(raw_score, 1.0)
-        
-        return float(normalized)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get forest statistics"""
-        return {
-            "num_trees": self.num_trees,
-            "tree_size": self.tree_size,
-            "shingle_size": self.shingle_size,
-            "points_seen": self.points_seen,
-            "avg_tree_size": np.mean([len(t.points) for t in self.trees]),
-        }
-
-
-class SGDModelTrainer:
-    """Stochastic Gradient Descent trainer for local models"""
-
-    def __init__(self, device_id: str, learning_rate: float = 0.001):
-        self.device_id = device_id
-        self.learning_rate = learning_rate  # 0.001 to prevent saturation
-        # SMALLER INITIALIZATION: Start closer to 0 to avoid early saturation
-        self.weights = np.random.normal(0, 0.01, 3)  # 3 features: mean, std, normalized_value
-        self.bias = 0.0
-        self.loss_history = []
-        self.n_updates = 0
-        self.predictions_history = []  # Track predictions for smoother accuracy
-
-    def predict(self, features: np.ndarray) -> float:
-        """Make prediction: sigmoid(w·x + b)"""
-        z = np.dot(self.weights, features) + self.bias
-        z_clipped = np.clip(z, -10, 10)
-        return 1 / (1 + np.exp(-z_clipped))  # Sigmoid
-
-    def train_batch(self, X_batch: np.ndarray, y_batch: np.ndarray) -> float:
-        """
-        Train on batch using gradient descent
-        X_batch: shape (batch_size, n_features)
-        y_batch: shape (batch_size,) - binary labels (0 or 1)
-        Returns: average loss
-        """
-        if len(X_batch) == 0:
-            return 0.0
-
-        batch_loss = 0.0
-        self.predictions_history = []
-
-        for X_sample, y_sample in zip(X_batch, y_batch):
-            # Forward pass
-            prediction = self.predict(X_sample)
-            self.predictions_history.append(prediction)
-
-            # Binary cross-entropy loss
-            loss = -y_sample * np.log(np.clip(prediction, 1e-7, 1)) - \
-                   (1 - y_sample) * np.log(np.clip(1 - prediction, 1e-7, 1))
-            batch_loss += loss
-
-            # Backward pass (gradient computation)
-            error = prediction - y_sample
-
-            grad_w = error * X_sample
-            grad_b = error
-
-            # L2 regularization to prevent overfitting
-            self.weights -= self.learning_rate * (grad_w + 0.01 * self.weights)
-            self.bias -= self.learning_rate * grad_b
-
-            self.n_updates += 1
-
-        avg_loss = batch_loss / len(X_batch)
-        self.loss_history.append(avg_loss)
-
-        return avg_loss
-
-    def calculate_accuracy(self, X: np.ndarray, y: np.ndarray) -> float:
-        """
-        Soft accuracy:
-          label 1 → accuracy = prediction
-          label 0 → accuracy = 1 - prediction
-        """
-        if len(X) == 0:
-            return 0.5
-
-        predictions = np.array([self.predict(x) for x in X])
-
-        soft_accuracy = np.mean([
-            pred if label == 1 else (1 - pred)
-            for pred, label in zip(predictions, y)
-        ])
-
-        return float(np.clip(soft_accuracy, 0.0, 1.0))
-
-    def save_model(self, version: int):
-        """Save model to disk"""
-        try:
-            MODEL_DIR.mkdir(parents=True, exist_ok=True)
-            model_path = MODEL_DIR / f"device_{self.device_id}_v{version}.pkl"
-
-            model_data = {
-                "device_id": self.device_id,
-                "version": version,
-                "weights": self.weights,
-                "bias": self.bias,
-                "learning_rate": self.learning_rate,
-                "n_updates": self.n_updates,
-                "loss_history": self.loss_history,
-            }
-
-            with open(model_path, "wb") as f:
-                pickle.dump(model_data, f)
-
-            logger.info(f"✓ Saved model for {self.device_id} v{version} at {model_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Error saving model for {self.device_id}: {e}")
-            return False
-
-
-# -------------------------------------------------------------------
-# Adaptive Threshold Manager
-# -------------------------------------------------------------------
-class AdaptiveThresholdManager:
-    """
-    Manages adaptive anomaly thresholds per device.
-    
-    Adjusts thresholds based on:
-    - Historical anomaly rates
-    - Score distribution
-    - Target anomaly rate
-    
-    This helps balance between:
-    - Too many false positives (threshold too low)
-    - Missing real anomalies (threshold too high)
-    """
-
-    def __init__(
-        self,
-        base_threshold: float = BASE_ANOMALY_THRESHOLD,
-        target_rate: float = TARGET_ANOMALY_RATE,
-        window_size: int = THRESHOLD_ADAPTATION_WINDOW
-    ):
-        self.base_threshold = base_threshold
-        self.target_rate = target_rate
-        self.window_size = window_size
-        
-        # Per-device tracking
-        self.device_thresholds: Dict[str, float] = {}
-        self.device_scores: Dict[str, List[float]] = defaultdict(list)
-        self.device_anomaly_counts: Dict[str, int] = defaultdict(int)
-        self.device_total_counts: Dict[str, int] = defaultdict(int)
-        self.adaptation_history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-
-    def get_threshold(self, device_id: str) -> float:
-        """Get the current threshold for a device"""
-        if device_id not in self.device_thresholds:
-            self.device_thresholds[device_id] = self.base_threshold
-        return self.device_thresholds[device_id]
-
-    def update(self, device_id: str, score: float, is_anomaly: bool) -> float:
-        """
-        Update threshold based on new score and return current threshold.
-        
-        Returns:
-            The updated threshold for this device
-        """
-        # Initialize if needed
-        if device_id not in self.device_thresholds:
-            self.device_thresholds[device_id] = self.base_threshold
-
-        # Track score
-        self.device_scores[device_id].append(score)
-        if len(self.device_scores[device_id]) > self.window_size:
-            self.device_scores[device_id].pop(0)
-
-        # Track counts
-        self.device_total_counts[device_id] += 1
-        if is_anomaly:
-            self.device_anomaly_counts[device_id] += 1
-
-        # Adapt threshold periodically
-        if self.device_total_counts[device_id] % (self.window_size // 2) == 0:
-            self._adapt_threshold(device_id)
-
-        return self.device_thresholds[device_id]
-
-    def _adapt_threshold(self, device_id: str) -> None:
-        """Adapt threshold based on recent anomaly rate"""
-        scores = self.device_scores[device_id]
-        if len(scores) < 20:
-            return
-
-        current_threshold = self.device_thresholds[device_id]
-        
-        # Calculate current anomaly rate in the window
-        anomalies_in_window = sum(1 for s in scores if s > current_threshold)
-        current_rate = anomalies_in_window / len(scores)
-
-        # Calculate new threshold
-        new_threshold = current_threshold
-        
-        if current_rate > self.target_rate * 1.5:
-            # Too many anomalies, raise threshold
-            new_threshold += THRESHOLD_ADJUSTMENT_FACTOR
-        elif current_rate < self.target_rate * 0.5:
-            # Too few anomalies, lower threshold
-            new_threshold -= THRESHOLD_ADJUSTMENT_FACTOR
-
-        # Clamp to valid range
-        new_threshold = max(MIN_THRESHOLD, min(MAX_THRESHOLD, new_threshold))
-
-        # Only update if change is significant
-        if abs(new_threshold - current_threshold) > 0.005:
-            old_threshold = current_threshold
-            self.device_thresholds[device_id] = new_threshold
-            
-            # Log adaptation
-            adaptation_event = {
-                "timestamp": datetime.now().isoformat(),
-                "old_threshold": old_threshold,
-                "new_threshold": new_threshold,
-                "current_rate": current_rate,
-                "target_rate": self.target_rate,
-                "window_size": len(scores)
-            }
-            self.adaptation_history[device_id].append(adaptation_event)
-            
-            # Keep only last 20 adaptations
-            if len(self.adaptation_history[device_id]) > 20:
-                self.adaptation_history[device_id].pop(0)
-            
-            logger.debug(
-                f"📊 Threshold adapted for {device_id}: "
-                f"{old_threshold:.3f} → {new_threshold:.3f} "
-                f"(rate: {current_rate:.2%} → target: {self.target_rate:.2%})"
-            )
-
-    def get_stats(self, device_id: str) -> Dict[str, Any]:
-        """Get threshold stats for a device"""
-        scores = self.device_scores.get(device_id, [])
-        threshold = self.device_thresholds.get(device_id, self.base_threshold)
-        
-        return {
-            "device_id": device_id,
-            "current_threshold": threshold,
-            "base_threshold": self.base_threshold,
-            "scores_tracked": len(scores),
-            "score_mean": float(np.mean(scores)) if scores else 0.0,
-            "score_std": float(np.std(scores)) if scores else 0.0,
-            "total_samples": self.device_total_counts.get(device_id, 0),
-            "total_anomalies": self.device_anomaly_counts.get(device_id, 0),
-            "anomaly_rate": (
-                self.device_anomaly_counts.get(device_id, 0) / 
-                max(1, self.device_total_counts.get(device_id, 1))
-            ),
-            "adaptations": len(self.adaptation_history.get(device_id, []))
-        }
-
-    def get_all_stats(self) -> Dict[str, Any]:
-        """Get aggregate stats across all devices"""
-        all_thresholds = list(self.device_thresholds.values())
-        total_samples = sum(self.device_total_counts.values())
-        total_anomalies = sum(self.device_anomaly_counts.values())
-        
-        return {
-            "num_devices": len(self.device_thresholds),
-            "avg_threshold": float(np.mean(all_thresholds)) if all_thresholds else self.base_threshold,
-            "min_threshold": float(np.min(all_thresholds)) if all_thresholds else self.base_threshold,
-            "max_threshold": float(np.max(all_thresholds)) if all_thresholds else self.base_threshold,
-            "total_samples": total_samples,
-            "total_anomalies": total_anomalies,
-            "overall_anomaly_rate": total_anomalies / max(1, total_samples),
-            "target_rate": self.target_rate
-        }
 
 
 class AnomalyDetectionFunction(MapFunction):
     """
-    Flink MapFunction for real-time anomaly detection using Random Cut Forest
-    and local model training using SGD.
-    
-    Enhanced with:
-    - Adaptive thresholds per device
-    - Performance tracking
-    - Data quality monitoring
+    Per-reading RRCF scoring and per-device federated local training.
+
+    State is created in open() on each TaskManager worker. Readings of one
+    device always reach the same worker (the stream is keyed by device_id).
     """
 
-    def __init__(self):
-        super().__init__()
-        self.device_stats = defaultdict(
-            lambda: {
-                "values": [],
-                "mean": 0.0,
-                "std": 1.0,
-                "samples": 0,
-                "last_training_time": datetime.now().timestamp(),
-                "anomaly_scores": [],
-            }
-        )
-        self.model_versions = defaultdict(lambda: {"version": 0, "samples": 0})
-        # SGD trainer per device
-        self.sgd_trainers = defaultdict(
-            lambda: SGDModelTrainer("unknown", learning_rate=LEARNING_RATE)
-        )
-        # Random Cut Forest per device
-        self.rcf_models = defaultdict(
-            lambda: RandomCutForest(
-                num_trees=RCF_NUM_TREES,
-                tree_size=RCF_TREE_SIZE,
-                shingle_size=RCF_SHINGLE_SIZE
-            )
-        )
-        self.anomaly_count = 0
-        
-        # New: Adaptive threshold manager
-        self.threshold_manager = AdaptiveThresholdManager() if ADAPTIVE_THRESHOLD_ENABLED else None
-        
-        # New: Data quality tracking
-        self.data_quality_stats = defaultdict(
-            lambda: {
-                "null_count": 0,
-                "out_of_range_count": 0,
-                "duplicate_count": 0,
-                "last_values": [],
-            }
-        )
+    def open(self, runtime_context: RuntimeContext):
+        self.forest = fm.RandomCutForest(num_trees=RCF_NUM_TREES, tree_size=RCF_TREE_SIZE)
+        self.thresholds = fm.AdaptiveThresholdManager() if fm.ADAPTIVE_THRESHOLD_ENABLED else None
+        self.global_model_cache = fm.GlobalModelCache()
+        self.feature_names: Optional[List[str]] = None  # fixed column order, set by the first reading
+        self.local_models: Dict[str, fm.LocalLogisticModel] = {}
+        # Recent labelled readings per device, stored as float32 vectors: 200
+        # readings x 2,400 devices as dicts would take ~1.6 GB
+        self.windows = defaultdict(lambda: deque(maxlen=LOCAL_WINDOW_SIZE))
+        self.metric_windows = defaultdict(lambda: deque(maxlen=100))
+        self.readings_since_training = defaultdict(int)
+        self.last_training_time: Dict[str, float] = {}
+        self.model_versions = defaultdict(int)
 
-    def _check_data_quality(self, device_id: str, value: float) -> Dict[str, Any]:
-        """Check data quality and track issues"""
-        quality_stats = self.data_quality_stats[device_id]
-        issues = []
-        
-        # Check for NaN or Inf
-        if np.isnan(value) or np.isinf(value):
-            quality_stats["null_count"] += 1
-            issues.append("invalid_value")
-        
-        # Check for out of expected range (simple heuristic)
-        if len(self.device_stats[device_id]["values"]) > 10:
-            mean = self.device_stats[device_id]["mean"]
-            std = self.device_stats[device_id]["std"]
-            if std > 0 and abs(value - mean) > 10 * std:
-                quality_stats["out_of_range_count"] += 1
-                issues.append("extreme_value")
-        
-        # Check for repeated values (stuck sensor)
-        quality_stats["last_values"].append(value)
-        if len(quality_stats["last_values"]) > 10:
-            quality_stats["last_values"].pop(0)
-        
-        if len(quality_stats["last_values"]) >= 5:
-            if len(set(quality_stats["last_values"][-5:])) == 1:
-                quality_stats["duplicate_count"] += 1
-                issues.append("stuck_sensor")
-        
-        return {
-            "has_issues": len(issues) > 0,
-            "issues": issues,
-            "quality_score": 1.0 - (len(issues) * 0.25)
-        }
+    # ---------------------------------------------------------------
+    def _training_due(self, device_id: str, now: float) -> bool:
+        if len(self.windows[device_id]) < MIN_TRAIN_SAMPLES:
+            return False
+        last = self.last_training_time.setdefault(device_id, now)
+        if device_id in self.model_versions:
+            needed = MODEL_TRAINING_INTERVAL_ROWS
+        else:
+            # Staggered first round, so devices do not all train at once
+            needed = fm.first_training_readings(device_id, MIN_TRAIN_SAMPLES, MODEL_TRAINING_INTERVAL_ROWS)
+        return (self.readings_since_training[device_id] >= needed
+                or now - last >= MODEL_TRAINING_INTERVAL_SECONDS)
 
-    def should_train_model(self, device_id: str) -> bool:
-        """
-        Train if:
-        - 50 new rows since last training OR
-        - 60 seconds elapsed since last training
-        """
-        stats = self.device_stats[device_id]
-        current_time = datetime.now().timestamp()
-        time_elapsed = current_time - stats["last_training_time"]
+    def _severity(self, score: float, threshold: float) -> str:
+        margin = score - threshold
+        if margin > 0.3 or score > 0.8:
+            return "critical"
+        if margin > 0.15 or score > 0.6:
+            return "warning"
+        return "info"
 
-        if stats["samples"] >= MODEL_TRAINING_INTERVAL_ROWS:
-            return True
-        if time_elapsed >= MODEL_TRAINING_INTERVAL_SECONDS:
-            return True
-        return False
-
-    def map(self, element):
-        """Process incoming IoT data using RCF for anomaly detection"""
+    # ---------------------------------------------------------------
+    def map(self, element: str) -> str:
+        results: Dict[str, List[str]] = {"anomalies": [], "models": []}
         try:
             data = json.loads(element)
             device_id = data.get("device_id", "unknown")
-            value = float(data.get("data", 0.0))  # Single numeric metric
-
-            results = {"anomalies": [], "models": []}
-
-            # New: Check data quality
-            quality_check = self._check_data_quality(device_id, value)
-            if quality_check["has_issues"] and "invalid_value" in quality_check["issues"]:
-                # Skip invalid values
-                logger.warning(f"⚠️ Invalid value from {device_id}: {value}")
+            features = fm.extract_features(data)
+            if not features:
                 return json.dumps(results)
+            if self.feature_names is None:
+                self.feature_names = sorted(features)
 
-            # Update device statistics
-            stats = self.device_stats[device_id]
-            stats["values"].append(value)
-            stats["samples"] += 1
+            vector = np.array([features.get(n, 0.0) for n in self.feature_names], dtype=np.float32)
+            raw_label = data.get("label")
+            label = None if raw_label is None else int(float(raw_label))
+            metric = float(data.get("data", 0.0))
+            self.metric_windows[device_id].append(metric)
 
-            # Keep rolling window of 100 values
-            if len(stats["values"]) > 100:
-                stats["values"].pop(0)
+            # ---------------- RRCF anomaly detection ----------------
+            score = self.forest.update(vector)
+            threshold = self.thresholds.get_threshold(device_id) if self.thresholds else fm.BASE_ANOMALY_THRESHOLD
+            is_anomaly = score > threshold
+            if self.thresholds:
+                self.thresholds.update(device_id, score, is_anomaly)
 
-            # Update mean / std for features
-            if len(stats["values"]) > 1:
-                stats["mean"] = float(np.mean(stats["values"]))
-                stats["std"] = float(np.std(stats["values"]))
-
-            # ============================================================
-            # Random Cut Forest Anomaly Detection
-            # ============================================================
-            rcf = self.rcf_models[device_id]
-            anomaly_score = rcf.update(value)
-            
-            # Track anomaly scores for this device
-            stats["anomaly_scores"].append(anomaly_score)
-            if len(stats["anomaly_scores"]) > 100:
-                stats["anomaly_scores"].pop(0)
-
-            # Get threshold (adaptive or static)
-            if self.threshold_manager:
-                threshold = self.threshold_manager.get_threshold(device_id)
-            else:
-                threshold = BASE_ANOMALY_THRESHOLD
-
-            # Check if anomaly (score > threshold)
-            is_anomaly = anomaly_score > threshold
-            
-            # Update adaptive threshold manager
-            if self.threshold_manager:
-                self.threshold_manager.update(device_id, anomaly_score, is_anomaly)
-            
             if is_anomaly:
-                self.anomaly_count += 1
-                
-                # Determine severity based on score (relative to threshold)
-                score_margin = anomaly_score - threshold
-                if score_margin > 0.3 or anomaly_score > 0.8:
-                    severity = "critical"
-                elif score_margin > 0.15 or anomaly_score > 0.6:
-                    severity = "warning"
-                else:
-                    severity = "info"
-                
-                anomaly = {
+                results["anomalies"].append(json.dumps({
                     "device_id": device_id,
-                    "value": value,
-                    "anomaly_score": float(anomaly_score),
+                    "value": metric,
+                    "anomaly_score": score,
+                    "raw_codisp": float(self.forest.last_raw_score),
                     "threshold": float(threshold),
-                    "severity": severity,
-                    "quality_score": quality_check["quality_score"],
+                    "severity": self._severity(score, threshold),
                     "detection_method": "random_cut_forest",
-                    "timestamp": datetime.now().isoformat(),
-                }
-                results["anomalies"].append(json.dumps(anomaly))
-                
-                logger.info(
-                    f"🚨 ANOMALY [{severity.upper()}] device={device_id} "
-                    f"value={value:.2f} score={anomaly_score:.3f} threshold={threshold:.3f}"
-                )
+                    # Ground-truth label of the flagged reading, so detection
+                    # precision can be measured against the dataset labels
+                    "label": label,
+                    "timestamp": data.get("timestamp") or datetime.now().isoformat(),
+                }))
 
-            # ============================================================
-            # Model Training (SGD)
-            # ============================================================
-            if self.should_train_model(device_id):
-                model = self.model_versions[device_id]
-                model["version"] += 1
+            # ---------------- federated local training ----------------
+            if label is not None:
+                self.windows[device_id].append((vector, label))
+                self.readings_since_training[device_id] += 1
 
-                # Reset counters
-                stats["samples"] = 0
-                stats["last_training_time"] = datetime.now().timestamp()
-
-                # Use current threshold for training labels
-                training_threshold = threshold if self.threshold_manager else BASE_ANOMALY_THRESHOLD
-
-                if len(stats["values"]) >= 2:
-                    X_train = []
-                    y_train = []
-
-                    for i, v in enumerate(stats["values"]):
-                        # Use anomaly scores as labels (threshold-based)
-                        if i < len(stats["anomaly_scores"]):
-                            score = stats["anomaly_scores"][i]
-                        else:
-                            score = 0.0
-
-                        # Features: [mean, std, normalized_value]
-                        norm_val = (v - stats["mean"]) / stats["std"] if stats["std"] > 0 else 0
-                        features = np.array([stats["mean"], stats["std"], norm_val])
-                        X_train.append(features)
-
-                        # Label: 1 if anomaly score was high, else 0 (using adaptive threshold)
-                        label = 1 if score > training_threshold else 0
-                        y_train.append(label)
-
-                    X_train = np.array(X_train)
-                    y_train = np.array(y_train)
-
-                    trainer = self.sgd_trainers[device_id]
-                    trainer.device_id = device_id
-
-                    loss = trainer.train_batch(X_train, y_train)
-                    accuracy = trainer.calculate_accuracy(X_train, y_train)
-
-                    trainer.save_model(model["version"])
-
-                    # Include threshold info in log
-                    threshold_info = ""
-                    if self.threshold_manager:
-                        threshold_stats = self.threshold_manager.get_stats(device_id)
-                        threshold_info = f", Threshold: {threshold_stats['current_threshold']:.3f}"
-
-                    logger.info(
-                        f"Device {device_id}: v{model['version']} "
-                        f"- Accuracy: {accuracy:.2%}, Loss: {loss:.4f}, "
-                        f"Updates: {trainer.n_updates}{threshold_info}"
-                    )
-                else:
-                    accuracy = 0.5
-                    loss = 0.0
-
-                model_update = {
-                    "device_id": device_id,
-                    "model_version": model["version"],
-                    "accuracy": float(accuracy),
-                    "loss": float(loss),
-                    "samples_processed": len(stats["values"]),
-                    "mean": float(stats["mean"]),
-                    "std": float(stats["std"]),
-                    "timestamp": datetime.now().isoformat(),
-                }
-                results["models"].append(json.dumps(model_update))
-
-            return json.dumps(results)
+            now = datetime.now().timestamp()
+            if self._training_due(device_id, now):
+                results["models"].append(self._train_local_model(device_id, now))
 
         except Exception as e:
             logger.error(f"Error in AnomalyDetectionFunction: {e}")
-            return json.dumps({"anomalies": [], "models": []})
+        return json.dumps(results)
+
+    def _train_local_model(self, device_id: str, now: float) -> str:
+        self.readings_since_training[device_id] = 0
+        self.last_training_time[device_id] = now
+        self.model_versions[device_id] += 1
+
+        local = self.local_models.get(device_id)
+        if local is None:
+            local = fm.LocalLogisticModel(device_id)
+            self.local_models[device_id] = local
+        local.sync_from_global(self.global_model_cache.get(), self.feature_names)
+
+        window = self.windows[device_id]
+        X = np.stack([v for v, _ in window]).astype(float)
+        if local.feature_names != self.feature_names:
+            # Align columns with the model's feature order
+            index = {name: i for i, name in enumerate(self.feature_names)}
+            X = np.stack([X[:, index[n]] if n in index else np.zeros(len(X)) for n in local.feature_names], axis=1)
+        labels = [y for _, y in window]
+
+        loss, accuracy = local.train_arrays(X, labels)
+        if SAVE_LOCAL_MODELS:
+            self._save_local_model(local, self.model_versions[device_id])
+
+        metrics = self.metric_windows[device_id]
+        return json.dumps({
+            "device_id": device_id,
+            "model_version": self.model_versions[device_id],
+            "base_global_version": local.base_global_version,
+            "accuracy": float(accuracy),
+            "loss": float(loss),
+            "samples_processed": len(labels),
+            "weights": local.weights_dict(),
+            "bias": float(local.bias),
+            "mean": float(np.mean(metrics)) if metrics else 0.0,
+            "std": float(np.std(metrics)) if metrics else 0.0,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    @staticmethod
+    def _save_local_model(local: fm.LocalLogisticModel, version: int) -> None:
+        """Latest parameters, one file per device (overwritten each round)."""
+        try:
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            with open(MODEL_DIR / f"{local.device_id}.json", "w", encoding="utf-8") as f:
+                json.dump(local.to_dict(version), f)
+        except Exception as e:
+            logger.error(f"Error saving model for {local.device_id}: {e}")
 
 
 def main():
-    """Main Flink job with parallelism optimization"""
-    if not FLINK_AVAILABLE:
-        logger.error("ERROR: Flink not available. This script must run in Flink Docker container.")
-        logger.error("Run inside Docker with: docker exec flink-jobmanager flink run -py ...")
-        return
-
-    logger.info("Starting Flink Local Training Job (with parallelism)")
-    logger.info(f"Using Kafka bootstrap servers: {KAFKA_BROKER}")
+    logger.info("Starting Flink Local Training Job (Kafka: %s)", KAFKA_BROKER)
+    logger.info("RRCF: shared forest per worker, %d trees x %d points", RCF_NUM_TREES, RCF_TREE_SIZE)
 
     env = StreamExecutionEnvironment.get_execution_environment()
-    
-    # Enable parallelism - use available task slots (default 2-4 for better throughput)
-    # This will be limited by taskmanager.numberOfTaskSlots in flink-conf.yaml
-    PARALLELISM = int(os.getenv("FLINK_PARALLELISM", "2"))
-    env.set_parallelism(PARALLELISM)
-    logger.info(f"Parallelism set to: {PARALLELISM}")
-    
-    # Enable checkpointing for fault tolerance (every 60 seconds)
+    parallelism = int(os.getenv("FLINK_PARALLELISM", "2"))
+    env.set_parallelism(parallelism)
     env.enable_checkpointing(60000)
-    
-    # Optimize buffer timeout for lower latency
-    env.set_buffer_timeout(100)  # 100ms buffer timeout
+    env.set_buffer_timeout(100)
 
-    # ---- Make sure Kafka connector jar is on the JVM classpath ----
-    # Use the SQL connector fat JAR which bundles all dependencies
-    jar_base = "/opt/flink/usrlib"
-    kafka_sql_connector_jar = f"file://{jar_base}/flink-sql-connector-kafka-3.1.0-1.18.jar"
+    kafka_jar = "file:///opt/flink/usrlib/flink-sql-connector-kafka-3.1.0-1.18.jar"
+    env.add_jars(kafka_jar)
+    env.add_classpaths(kafka_jar)
+    # Ship the model module to the TaskManagers' Python workers
+    env.add_python_file(os.path.join(SCRIPT_DIR, "flink_models.py"))
 
-    logger.info("Adding Kafka jar to pipeline:")
-    logger.info("  %s", kafka_sql_connector_jar)
-
-    env.add_jars(kafka_sql_connector_jar)
-    env.add_classpaths(kafka_sql_connector_jar)
-    # --------------------------------------------------------------------------
-
-    # Kafka Source (Flink 1.18+)
-    kafka_source = (
+    source = (
         KafkaSource.builder()
         .set_bootstrap_servers(KAFKA_BROKER)
         .set_topics(INPUT_TOPIC)
@@ -874,73 +254,37 @@ def main():
         .set_value_only_deserializer(SimpleStringSchema())
         .build()
     )
+    stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "kafka-source")
 
-    stream = env.from_source(
-        kafka_source,
-        WatermarkStrategy.no_watermarks(),
-        "kafka-source",
-    )
-    
-    # ============================================================
-    # KEY BY DEVICE_ID for proper parallelism
-    # This ensures all data for a device goes to the same parallel task
-    # ============================================================
-    def extract_device_id(element: str) -> str:
-        """Extract device_id for keying"""
+    def device_key(element: str) -> str:
         try:
-            data = json.loads(element)
-            return data.get("device_id", "unknown")
-        except:
+            return json.loads(element).get("device_id", "unknown")
+        except Exception:
             return "unknown"
-    
-    # Key by device_id, then process with stateful function
-    keyed_stream = stream.key_by(extract_device_id)
-    
-    processed = keyed_stream.map(AnomalyDetectionFunction(), output_type=Types.STRING())
 
-    # Extract anomalies / models as separate streams
-    def extract_anomalies(element: str) -> str:
-        data = json.loads(element)
-        return "\n".join(data.get("anomalies", []))
+    processed = stream.key_by(device_key).map(AnomalyDetectionFunction(), output_type=Types.STRING())
 
-    def extract_models(element: str) -> str:
-        data = json.loads(element)
-        return "\n".join(data.get("models", []))
+    def extract(kind):
+        return lambda element: "\n".join(json.loads(element).get(kind, []))
 
-    anomalies = processed.map(extract_anomalies, output_type=Types.STRING()).filter(
-        lambda x: len(x) > 0
-    )
-    models = processed.map(extract_models, output_type=Types.STRING()).filter(
-        lambda x: len(x) > 0
-    )
-
-    # Kafka Sinks (Flink 1.18+)
-    anomaly_sink = (
-        KafkaSink.builder()
-        .set_bootstrap_servers(KAFKA_BROKER)
-        .set_record_serializer(
-            KafkaRecordSerializationSchema.builder()
-            .set_topic(ANOMALY_OUTPUT_TOPIC)
-            .set_value_serialization_schema(SimpleStringSchema())
+    def kafka_sink(topic: str) -> KafkaSink:
+        return (
+            KafkaSink.builder()
+            .set_bootstrap_servers(KAFKA_BROKER)
+            .set_record_serializer(
+                KafkaRecordSerializationSchema.builder()
+                .set_topic(topic)
+                .set_value_serialization_schema(SimpleStringSchema())
+                .build()
+            )
             .build()
         )
-        .build()
-    )
 
-    model_sink = (
-        KafkaSink.builder()
-        .set_bootstrap_servers(KAFKA_BROKER)
-        .set_record_serializer(
-            KafkaRecordSerializationSchema.builder()
-            .set_topic(MODEL_UPDATE_TOPIC)
-            .set_value_serialization_schema(SimpleStringSchema())
-            .build()
-        )
-        .build()
-    )
-
-    anomalies.sink_to(anomaly_sink)
-    models.sink_to(model_sink)
+    # Each output line is one JSON message
+    anomalies = processed.map(extract("anomalies"), output_type=Types.STRING()).filter(lambda x: len(x) > 0)
+    models = processed.map(extract("models"), output_type=Types.STRING()).filter(lambda x: len(x) > 0)
+    anomalies.flat_map(lambda x: x.split("\n"), output_type=Types.STRING()).sink_to(kafka_sink(ANOMALY_OUTPUT_TOPIC))
+    models.flat_map(lambda x: x.split("\n"), output_type=Types.STRING()).sink_to(kafka_sink(MODEL_UPDATE_TOPIC))
 
     env.execute("Local Training Job")
 

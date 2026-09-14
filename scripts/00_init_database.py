@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS anomalies (
     value            DOUBLE PRECISION,
     anomaly_score    DOUBLE PRECISION,      -- RCF score (0-1 scale)
     severity         TEXT,                   -- info, warning, critical
-    detection_method TEXT DEFAULT 'random_cut_forest'
+    detection_method TEXT DEFAULT 'random_cut_forest',
+    label            INT                     -- ground-truth attack label of the flagged reading
 );
 
 SELECT create_hypertable('anomalies', 'ts', if_not_exists => TRUE);
@@ -135,12 +136,19 @@ CREATE TABLE IF NOT EXISTS local_models (
 );
 
 CREATE TABLE IF NOT EXISTS federated_models (
-    id                BIGSERIAL,              -- no PRIMARY KEY here
-    global_version    INT             NOT NULL,
-    aggregation_round INT             NOT NULL,
-    num_devices       INT             NOT NULL,
-    accuracy          DOUBLE PRECISION NOT NULL,
-    created_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    id                 BIGSERIAL,              -- no PRIMARY KEY here
+    global_version     INT             NOT NULL,
+    aggregation_round  INT             NOT NULL,
+    num_devices        INT             NOT NULL,
+    accuracy           DOUBLE PRECISION NOT NULL,  -- mean local TRAINING accuracy (held-out metrics: model_evaluations)
+    total_samples      BIGINT,                     -- training samples behind this round
+    update_norm        DOUBLE PRECISION,           -- L2 norm of the aggregated parameter update
+    mean_update_cosine DOUBLE PRECISION,           -- mean cosine similarity of device updates (1 = full agreement)
+    num_clusters       INT,                        -- groups of devices with similar update directions
+    dp_noise_std       DOUBLE PRECISION,           -- Gaussian noise std added to the averaged update (0 = DP off)
+    dp_clipped_updates INT,                        -- device updates scaled down to the clip norm
+    dp_epsilon         DOUBLE PRECISION,           -- cumulative (epsilon, delta=1e-5) privacy budget so far
+    created_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 SELECT create_hypertable('local_models', 'created_at',     if_not_exists => TRUE);
@@ -206,11 +214,10 @@ CREATE TABLE IF NOT EXISTS stream_analysis_results (
     metric_name        TEXT            NOT NULL,
     raw_value          DOUBLE PRECISION,
     moving_avg_30s     DOUBLE PRECISION,
-    moving_avg_5m      DOUBLE PRECISION,
-    anomaly_score      DOUBLE PRECISION,       -- RCF anomaly score (0-1)
+    anomaly_score      DOUBLE PRECISION,       -- fleet z-score scaled to 0-1
     is_anomaly         BOOLEAN         NOT NULL DEFAULT FALSE,
     anomaly_confidence DOUBLE PRECISION,
-    detection_method   TEXT            DEFAULT 'random_cut_forest',
+    detection_method   TEXT            DEFAULT 'fleet_zscore',
     timestamp          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
@@ -232,6 +239,14 @@ CREATE TABLE IF NOT EXISTS model_evaluations (
     actual_result         TEXT,
     is_correct            BOOLEAN,
     confidence            DOUBLE PRECISION,
+    precision             DOUBLE PRECISION,
+    recall                DOUBLE PRECISION,
+    f1_score              DOUBLE PRECISION,
+    sample_count          BIGINT,
+    true_positives        BIGINT,
+    false_positives       BIGINT,
+    false_negatives       BIGINT,
+    true_negatives        BIGINT,
     evaluation_timestamp  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
@@ -239,6 +254,11 @@ SELECT create_hypertable('model_evaluations', 'evaluation_timestamp', if_not_exi
 
 CREATE INDEX IF NOT EXISTS idx_model_evaluations_version_ts
     ON model_evaluations (model_version, evaluation_timestamp DESC);
+
+-- Every evaluation writes one row per device plus 'ALL'; dashboards, the
+-- monitor and the device viewer look rows up by device
+CREATE INDEX IF NOT EXISTS idx_model_evaluations_device_ts
+    ON model_evaluations (device_id, evaluation_timestamp DESC);
 """
 
 

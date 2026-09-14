@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -148,6 +149,39 @@ def wait_for_kafka_cli() -> None:
     raise RuntimeError(msg)
 
 
+def ensure_partition_count(name: str, partitions: int) -> None:
+    """
+    Raise the partition count of a topic created earlier with fewer partitions.
+
+    `--if-not-exists` leaves existing topics untouched, so a Kafka volume from
+    an older run keeps its single partition. Kafka can only add partitions;
+    a failure here is logged and does not stop the pipeline.
+    """
+    describe = run_in_container(
+        f"kafka-topics --bootstrap-server {KAFKA_BOOTSTRAP_INTERNAL} --describe --topic {name}"
+    )
+    match = re.search(r"PartitionCount:\s*(\d+)", describe.stdout or "")
+    if describe.returncode != 0 or not match:
+        logger.warning("Could not read the partition count of '%s'; leaving it unchanged.", name)
+        return
+    current = int(match.group(1))
+    if current >= partitions:
+        return
+    alter = run_in_container(
+        f"kafka-topics --bootstrap-server {KAFKA_BOOTSTRAP_INTERNAL} "
+        f"--alter --topic {name} --partitions {partitions}"
+    )
+    if alter.returncode == 0:
+        logger.info("✓ Topic '%s': partitions raised from %d to %d.", name, current, partitions)
+    else:
+        logger.warning(
+            "Could not raise the partitions of '%s' (rc=%d): %s",
+            name,
+            alter.returncode,
+            (alter.stderr or "").strip() or "<no stderr>",
+        )
+
+
 def ensure_topics() -> None:
     """
     Ensure all topics in TOPICS exist using kafka-topics --if-not-exists.
@@ -193,8 +227,10 @@ def ensure_topics() -> None:
             if stdout:
                 logger.info("kafka-topics output for '%s': %s", name, stdout)
             logger.info("✓ Topic '%s' is ensured.", name)
+            ensure_partition_count(name, partitions)
         elif "already exists" in combined:
             logger.info("✓ Topic '%s' already exists.", name)
+            ensure_partition_count(name, partitions)
         else:
             logger.error(
                 "Failed to create/ensure topic '%s' (rc=%d).\nSTDOUT: %s\nSTDERR: %s",

@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": "-- Grafana --",
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -12,567 +15,2184 @@
       }
     ]
   },
-  "description": "Real-time monitoring of data pipeline, Kafka streams, and system throughput",
+  "description": "Is the pipeline keeping up? Throughput, Flink lag, data freshness, platform health and alerts.",
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 2,
+  "graphTooltip": 1,
   "id": null,
   "links": [
     {
-      "asDropdown": true,
+      "asDropdown": false,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
-      "tags": ["flead"],
-      "title": "FLEAD Dashboards",
-      "type": "dashboards"
+      "tags": [
+        "flead"
+      ],
+      "targetBlank": false,
+      "title": "FLEAD dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
     }
   ],
-  "liveNow": true,
+  "liveNow": false,
   "panels": [
     {
-      "id": 100,
-      "type": "row",
-      "title": "⚡ Real-Time Metrics",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "collapsed": false
-    },
-    {
-      "id": 1,
-      "type": "stat",
-      "title": "📊 Total IoT Msgs",
-      "description": "Total IoT messages in database",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(*) AS value FROM iot_data;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "msg/s",
-          "decimals": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 1 },
-              { "color": "#2ECC40", "value": 5 }
-            ]
-          }
-        }
-      },
+      "type": "text",
+      "title": "",
+      "transparent": true,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "textMode": "value_and_name"
+        "mode": "markdown",
+        "content": "### Operations\nStream throughput and lag (Prometheus), freshness of each stage (TimescaleDB), JVM memory and alert states.  \n**[Federated learning & privacy](/d/flead-fl-lab)** · **[Anomalies](/d/flead-anomaly)** · **[Devices](/d/flead-device)** · **[Operations](/d/flead-ops)** · [Live monitor ↗](http://localhost:5001) · [Device viewer ↗](http://localhost:8082)"
+      },
+      "id": 1,
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
       }
     },
     {
+      "type": "row",
+      "title": "Stream",
+      "collapsed": false,
+      "panels": [],
       "id": 2,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      }
+    },
+    {
       "type": "stat",
-      "title": "📡 Device Count",
-      "description": "Total unique devices",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "title": "Readings / s",
+      "description": "Collector throughput (15-second snapshots). The producer sends 150 per second.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(DISTINCT device_id) AS value FROM iot_data;"
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT GREATEST(0, (a.metric_value - b.metric_value) * 1 / NULLIF(EXTRACT(EPOCH FROM a.timestamp - b.timestamp), 0)) AS value FROM (SELECT metric_value, timestamp FROM dashboard_metrics WHERE metric_name = 'total_iot_count' ORDER BY timestamp DESC LIMIT 1) a CROSS JOIN LATERAL (SELECT metric_value, timestamp FROM dashboard_metrics WHERE metric_name = 'total_iot_count' AND timestamp <= a.timestamp - INTERVAL '60 seconds' ORDER BY timestamp DESC LIMIT 1) b"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 100 },
-              { "color": "#2ECC40", "value": 500 }
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 100
+              }
             ]
-          }
-        }
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
       "id": 3,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
       "type": "stat",
-      "title": "🔔 Alerts/5min",
-      "description": "Anomalies detected in last 5 minutes",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "title": "Flink reads / s",
+      "description": "Readings the Flink job pulls from Kafka per second; under backpressure this is its processing rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(*) AS value FROM anomalies WHERE ts > now() - interval '5 minutes';"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_consumed_rate)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#2ECC40", "value": null },
-              { "color": "#FFDC00", "value": 3 },
-              { "color": "#FF851B", "value": 10 },
-              { "color": "#FF4136", "value": 25 }
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 140
+              }
             ]
-          }
-        }
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
       "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 5
+      }
+    },
+    {
       "type": "stat",
-      "title": "⏱️ Since Anomaly",
-      "description": "Time since last anomaly",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "title": "Flink lag",
+      "description": "Readings waiting in Kafka for Flink. Above 9,000 (one minute of stream) for 10 minutes, FlinkFallingBehind fires.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, EXTRACT(EPOCH FROM (now() - MAX(ts))) AS value FROM anomalies;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 0,
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#2ECC40", "value": null },
-              { "color": "#FFDC00", "value": 60 },
-              { "color": "#FF851B", "value": 300 },
-              { "color": "#FF4136", "value": 600 }
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 9000
+              }
             ]
-          }
-        }
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "center"
-      }
-    },
-    {
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
       "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 5
+      }
+    },
+    {
       "type": "stat",
-      "title": "🧠 Model Lag",
-      "description": "Time since last FL aggregation",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "title": "Backpressure",
+      "description": "Whether a Flink task is waiting on a slower downstream task.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, EXTRACT(EPOCH FROM (now() - COALESCE(MAX(created_at), now() - interval '1 hour'))) AS value FROM federated_models;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_taskmanager_job_task_isBackPressured)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "No",
+                  "color": "#22c55e"
+                },
+                "1": {
+                  "text": "Yes",
+                  "color": "#f59e0b"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Anomaly age",
+      "description": "Age of the newest flagged reading (reading time). Grows with Flink lag.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(ts)) AS value FROM anomalies WHERE ts > NOW() - INTERVAL '1 day'"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#2ECC40", "value": null },
-              { "color": "#FFDC00", "value": 300 },
-              { "color": "#FF851B", "value": 900 },
-              { "color": "#FF4136", "value": 1800 }
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 300
+              }
             ]
-          }
-        }
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "center"
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 7,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
       }
     },
     {
-      "id": 6,
-      "type": "gauge",
-      "title": "📈 Pipeline Health",
-      "description": "Overall pipeline health score",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "type": "stat",
+      "title": "Alerts firing",
+      "description": "Prometheus alert rules currently firing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "WITH metrics AS (\n  SELECT\n    CASE WHEN EXISTS(SELECT 1 FROM anomalies WHERE ts > now() - interval '5 minutes') THEN 40 ELSE 0 END +\n    CASE WHEN EXISTS(SELECT 1 FROM local_models WHERE created_at > now() - interval '1 hour') THEN 30 ELSE 0 END +\n    GREATEST(0, 30 - (SELECT COUNT(*) FROM anomalies WHERE ts > now() - interval '15 minutes' AND severity = 'critical')) AS health\n)\nSELECT now() AS time, health AS value FROM metrics;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 50 },
-              { "color": "#2ECC40", "value": 80 }
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 8,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stored vs processed per second",
+      "description": "If Flink reads less than the collector stores, the lag grows.",
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "WITH s AS (SELECT time_bucket('1 minute', timestamp) AS t, MAX(metric_value) AS v FROM dashboard_metrics WHERE metric_name = 'total_iot_count' AND $__timeFilter(timestamp) GROUP BY 1) SELECT t AS time, GREATEST(0, (v - LAG(v) OVER (ORDER BY t)) * 1 / NULLIF(EXTRACT(EPOCH FROM t - LAG(t) OVER (ORDER BY t)), 0)) AS \"Stored by collector\" FROM s ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_consumed_rate)",
+          "legendFormat": "Read by Flink",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Stored by collector"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Read by Flink"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
             ]
           }
-        }
+        ]
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
       }
     },
     {
-      "id": 101,
-      "type": "row",
-      "title": "📊 Data Ingestion Flow",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
-      "collapsed": false
-    },
-    {
+      "type": "timeseries",
+      "title": "Flink lag",
+      "description": "Kafka consumer lag of the Flink job; the shaded area is above the alert threshold.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max)",
+          "legendFormat": "Readings waiting",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "rgba(239, 68, 68, 0.12)",
+                "value": 9000
+              }
+            ]
+          },
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Readings waiting"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
       "id": 10,
-      "type": "timeseries",
-      "title": "📈 Anomaly Rate (per minute)",
-      "description": "Anomaly detection rate over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', ts) AS time, COUNT(*) AS \"Anomalies\" FROM anomalies WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 40,
-            "gradientMode": "opacity",
-            "showPoints": "never"
-          }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Messages" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00D4FF", "mode": "fixed" } }] }
-        ]
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["sum", "mean", "max", "last"] },
-        "tooltip": { "mode": "single" }
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
       }
     },
     {
-      "id": 11,
-      "type": "timeseries",
-      "title": "🔔 Anomaly Detection Rate",
-      "description": "Anomalies detected per minute",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
-      "targets": [
-        {
-          "refId": "All",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', ts) AS time, COUNT(*) AS \"Total\" FROM anomalies WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 1;"
-        },
-        {
-          "refId": "HIGH",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', ts) AS time, COUNT(*) AS \"HIGH\" FROM anomalies WHERE $__timeFilter(ts) AND severity = 'HIGH' GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 30,
-            "showPoints": "auto"
-          }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Total" }, "properties": [{ "id": "color", "value": { "fixedColor": "#FF851B", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "HIGH" }, "properties": [{ "id": "color", "value": { "fixedColor": "#FF4136", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 60 }] }
-        ]
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["sum", "mean", "max"] },
-        "tooltip": { "mode": "multi" }
-      }
-    },
-    {
-      "id": 102,
       "type": "row",
-      "title": "🔄 Processing Pipeline",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
-      "collapsed": false
+      "title": "Freshness",
+      "collapsed": false,
+      "panels": [],
+      "id": 11,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      }
     },
     {
-      "id": 20,
-      "type": "timeseries",
-      "title": "🏠 Local Model Training Rate",
-      "description": "Local models created per 5 minutes",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "type": "stat",
+      "title": "Reading age",
+      "description": "Age of the newest stored reading.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('5 minutes', created_at) AS time, COUNT(*) AS \"Models\" FROM local_models WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1;"
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(ts)) AS value FROM iot_data WHERE ts > NOW() - INTERVAL '1 day'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 60
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 12,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Local model age",
+      "description": "Age of the newest local model the aggregator received.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(created_at)) AS value FROM local_models WHERE created_at > NOW() - INTERVAL '1 day'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 600
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 13,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Round age",
+      "description": "Rounds run every 60 s once 200 devices have reported.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(created_at)) AS value FROM federated_models"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 300
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 14,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Evaluation age",
+      "description": "Spark checks for a new global version every 120 s.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(evaluation_timestamp)) AS value FROM model_evaluations WHERE evaluation_timestamp > NOW() - INTERVAL '1 day' AND device_id = 'ALL'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 600
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 15,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Z-score age",
+      "description": "Spark writes 30-second windows every 30 s after a one-minute watermark.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM NOW() - MAX(timestamp)) AS value FROM stream_analysis_results WHERE timestamp > NOW() - INTERVAL '1 day'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 300
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 16,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Active devices",
+      "description": "Devices with a reading stored in the last 5 minutes.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT metric_value AS value FROM dashboard_metrics WHERE metric_name = 'active_devices_5m' ORDER BY timestamp DESC LIMIT 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 2000
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 17,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 18
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Local models and anomalies per minute",
+      "description": "From the 15-second KPI snapshots (insert time).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "WITH s AS (SELECT time_bucket('1 minute', timestamp) AS t, MAX(metric_value) AS v FROM dashboard_metrics WHERE metric_name = 'total_local_models_count' AND $__timeFilter(timestamp) GROUP BY 1) SELECT t AS time, GREATEST(0, (v - LAG(v) OVER (ORDER BY t)) * 60 / NULLIF(EXTRACT(EPOCH FROM t - LAG(t) OVER (ORDER BY t)), 0)) AS \"Local models\" FROM s ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "WITH s AS (SELECT time_bucket('1 minute', timestamp) AS t, MAX(metric_value) AS v FROM dashboard_metrics WHERE metric_name = 'total_anomalies_count' AND $__timeFilter(timestamp) GROUP BY 1) SELECT t AS time, GREATEST(0, (v - LAG(v) OVER (ORDER BY t)) * 60 / NULLIF(EXTRACT(EPOCH FROM t - LAG(t) OVER (ORDER BY t)), 0)) AS \"Anomalies stored\" FROM s ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Local models"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Anomalies stored"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f97316"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 18,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Devices per federated round",
+      "description": "Rounds need at least 200 devices.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, num_devices AS \"Devices\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
           "custom": {
             "drawStyle": "bars",
-            "lineWidth": 0,
-            "fillOpacity": 80,
-            "gradientMode": "hue"
-          }
+            "lineWidth": 2,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Models" }, "properties": [{ "id": "color", "value": { "fixedColor": "#9D70F9", "mode": "fixed" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Devices"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          }
         ]
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 19,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
       }
     },
     {
+      "type": "row",
+      "title": "Platform",
+      "collapsed": false,
+      "panels": [],
+      "id": 20,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Flink job uptime",
+      "description": "Time since the Flink training job (re)started.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_jobmanager_job_uptime)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#f59e0b",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 60000
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
       "id": 21,
-      "type": "timeseries",
-      "title": "🧠 FL Aggregation Events",
-      "description": "Global model updates over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 31
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Flink restarts",
+      "description": "Restarts of the Flink job since submission.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, num_devices AS \"Devices Aggregated\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY created_at;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_jobmanager_job_numRestarts)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "points",
-            "pointSize": 12,
-            "showPoints": "always"
-          }
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 1
+              },
+              {
+                "color": "#ef4444",
+                "value": 4
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
         },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Devices Aggregated" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00D4FF", "mode": "fixed" } }] }
-        ]
+        "overrides": []
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
-      }
-    },
-    {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
       "id": 22,
-      "type": "timeseries",
-      "title": "📊 Stream Analysis Events",
-      "description": "Real-time stream processing results",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('5 minutes', timestamp) AS time, COUNT(*) AS \"Events\", SUM(CASE WHEN is_anomaly THEN 1 ELSE 0 END) AS \"Anomalies\" FROM stream_analysis_results WHERE $__timeFilter(timestamp) GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "showPoints": "auto"
-          }
-        }
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi" }
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 31
       }
     },
     {
-      "id": 103,
-      "type": "row",
-      "title": "📋 Dashboard Metrics",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
-      "collapsed": false
-    },
-    {
-      "id": 30,
-      "type": "timeseries",
-      "title": "📈 Pipeline KPIs Over Time",
-      "description": "Key metrics tracked by the pipeline",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "type": "stat",
+      "title": "Spark workers",
+      "description": "Workers registered with the Spark master.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT timestamp AS time, metric_name, metric_value AS value FROM dashboard_metrics WHERE $__timeFilter(timestamp) AND metric_value > 0 ORDER BY timestamp;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(metrics_master_aliveWorkers_Value)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "auto"
-          }
-        }
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["last", "mean"] },
-        "tooltip": { "mode": "multi" }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
       },
-      "transformations": [
-        {
-          "id": "renameByRegex",
-          "options": { "regex": "value (.*)", "renamePattern": "$1" }
-        }
-      ]
+      "id": 23,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 31
+      }
     },
     {
-      "id": 31,
-      "type": "table",
-      "title": "📋 Current KPI Status",
-      "description": "Latest values for all tracked metrics",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "type": "stat",
+      "title": "Scrape targets up",
+      "description": "Endpoints Prometheus scraped successfully (5 expected).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT DISTINCT ON (metric_name)\n  timestamp AS \"Updated\",\n  metric_name AS \"Metric\",\n  metric_value AS \"Value\",\n  metric_unit AS \"Unit\",\n  COALESCE(device_id, 'system') AS \"Source\"\nFROM dashboard_metrics\nWHERE metric_value > 0\nORDER BY metric_name, timestamp DESC;"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(up)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true }
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 5
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
         },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Updated" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-          { "matcher": { "id": "byName", "options": "Value" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "color", "value": { "mode": "continuous-BlYlRd" } }] }
-        ]
+        "overrides": []
       },
-      "options": { "showHeader": true, "cellHeight": "sm" }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 24,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 31
+      }
     },
     {
-      "id": 104,
-      "type": "row",
-      "title": "📡 Live Data Feeds",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
-      "collapsed": true,
-      "panels": [
+      "type": "stat",
+      "title": "DB errors",
+      "description": "Failed TimescaleDB connections from the monitor since it started.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
         {
-          "id": 40,
-          "type": "table",
-          "title": "🔄 Latest IoT Messages",
-          "datasource": "FLEAD-TimescaleDB",
-          "gridPos": { "h": 10, "w": 12, "x": 0, "y": 42 },
-          "targets": [
-            {
-              "refId": "A",
-              "format": "table",
-              "rawSql": "SELECT ts AS \"Time\", device_id AS \"Device\", ROUND(value::numeric, 4) AS \"Value\", CASE WHEN label = 1 THEN '⚠️' ELSE '✅' END AS \"Status\" FROM iot_data ORDER BY ts DESC LIMIT 50;"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": { "custom": { "align": "auto", "filterable": true } },
-            "overrides": [
-              { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] }
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flead_db_connection_errors_total)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 1
+              }
             ]
           },
-          "options": { "showHeader": true, "cellHeight": "sm" }
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 25,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 31
+      }
+    },
+    {
+      "type": "stat",
+      "title": "KPI snapshot age",
+      "description": "Age of the newest fleet KPI snapshot (dashboard-metrics-updater, every 15 s).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "min(flead_metrics_snapshot_age_seconds)",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#ef4444",
+                "value": 120
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 26,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 31
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM heap used",
+      "description": "The FlinkTaskManagerHeapHigh alert fires above 90%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_taskmanager_Status_JVM_Memory_Heap_Used / flink_taskmanager_Status_JVM_Memory_Heap_Max)",
+          "legendFormat": "Flink TaskManager",
+          "range": true,
+          "instant": false
         },
         {
-          "id": 41,
-          "type": "table",
-          "title": "🔔 Latest Anomalies",
-          "datasource": "FLEAD-TimescaleDB",
-          "gridPos": { "h": 10, "w": 12, "x": 12, "y": 42 },
-          "targets": [
-            {
-              "refId": "A",
-              "format": "table",
-              "rawSql": "SELECT ts AS \"Time\", device_id AS \"Device\", ROUND(anomaly_score::numeric, 3) AS \"Score\", severity AS \"Severity\" FROM anomalies ORDER BY ts DESC LIMIT 50;"
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(flink_jobmanager_Status_JVM_Memory_Heap_Used / flink_jobmanager_Status_JVM_Memory_Heap_Max)",
+          "legendFormat": "Flink JobManager",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-          ],
-          "fieldConfig": {
-            "defaults": { "custom": { "align": "auto", "filterable": true } },
-            "overrides": [
-              { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-              { "matcher": { "id": "byName", "options": "Severity" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "HIGH": { "color": "red", "text": "🔴 HIGH" }, "MEDIUM": { "color": "orange", "text": "🟠 MED" }, "LOW": { "color": "yellow", "text": "🟡 LOW" } } }] }] }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Flink TaskManager"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#a855f7"
+                }
+              }
             ]
           },
-          "options": { "showHeader": true, "cellHeight": "sm" }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Flink JobManager"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
         }
-      ]
+      },
+      "id": 27,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      }
+    },
+    {
+      "type": "table",
+      "title": "Alert rules pending or firing",
+      "description": "Rules are defined in prometheus/alerts.yml.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "flead-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "flead-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "ALERTS",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "minWidth": 80
+          },
+          "noValue": "No alert rules are pending or firing"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "id": 28,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      }
+    },
+    {
+      "type": "row",
+      "title": "Live feeds",
+      "collapsed": false,
+      "panels": [],
+      "id": 29,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      }
+    },
+    {
+      "type": "table",
+      "title": "Latest readings",
+      "description": "Readings stored in the last 5 minutes.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT ts AS \"Time\", device_id AS \"Device\", ROUND(value::numeric, 3) AS \"tcp.ack\", CASE label WHEN 1 THEN 'attack' ELSE 'benign' END AS \"Label\" FROM iot_data WHERE ts > NOW() - INTERVAL '5 minutes' ORDER BY ts DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "minWidth": 80
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:HH:mm:ss"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Label"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": {
+                        "color": "#ef4444",
+                        "index": 0
+                      },
+                      "warning": {
+                        "color": "#f97316",
+                        "index": 1
+                      },
+                      "info": {
+                        "color": "#3b82f6",
+                        "index": 2
+                      },
+                      "attack": {
+                        "color": "#ef4444",
+                        "index": 3
+                      },
+                      "benign": {
+                        "color": "#22c55e",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Device"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in Devices dashboard",
+                    "url": "/d/flead-device?var-device=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "id": 30,
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      }
+    },
+    {
+      "type": "table",
+      "title": "Current KPI snapshot",
+      "description": "Latest fleet KPIs from dashboard-metrics-updater and Spark.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT DISTINCT ON (metric_name) CASE metric_name WHEN 'total_iot_count' THEN 'Readings stored' WHEN 'total_anomalies_count' THEN 'Anomalies stored' WHEN 'total_local_models_count' THEN 'Local models stored' WHEN 'total_federated_models_count' THEN 'Global versions' WHEN 'devices_with_models' THEN 'Devices with models' WHEN 'active_devices_5m' THEN 'Active devices (5 min)' WHEN 'stale_devices_count' THEN 'Stale devices' WHEN 'anomaly_rate_1h' THEN 'Readings flagged (1 h)' WHEN 'anomaly_attack_share_1h' THEN 'RRCF precision (1 h)' WHEN 'global_model_heldout_accuracy' THEN 'Held-out accuracy' WHEN 'global_model_heldout_f1' THEN 'Held-out F1' WHEN 'spark_batch_device_day_rows' THEN 'Daily statistics rows' ELSE metric_name END AS \"Metric\", CASE WHEN metric_name LIKE '%f1' THEN to_char(metric_value, 'FM0.000') WHEN metric_unit = 'ratio' THEN to_char(metric_value * 100, 'FM990.0') || ' %' ELSE to_char(metric_value, 'FM999,999,990') END AS \"Value\", timestamp AS \"Updated\" FROM dashboard_metrics WHERE timestamp > NOW() - INTERVAL '10 minutes' ORDER BY metric_name, timestamp DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "minWidth": 80
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Updated"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:HH:mm:ss"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "id": 31,
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      }
     }
   ],
-  "refresh": "5s",
+  "refresh": "15s",
   "schemaVersion": 39,
-  "style": "dark",
-  "tags": ["flead", "operations", "real-time", "pipeline"],
-  "templating": { "list": [] },
-  "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {
-    "refresh_intervals": ["5s", "10s", "30s", "1m"],
-    "time_options": ["5m", "15m", "30m", "1h", "3h", "6h", "12h"]
+  "tags": [
+    "flead",
+    "operations"
+  ],
+  "templating": {
+    "list": []
   },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {},
   "timezone": "browser",
-  "title": "FLEAD - Operations Center",
+  "title": "FLEAD - Operations",
   "uid": "flead-ops",
   "version": 1,
   "weekStart": ""

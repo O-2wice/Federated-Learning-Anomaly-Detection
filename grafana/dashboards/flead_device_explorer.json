@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": "-- Grafana --",
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -12,461 +15,947 @@
       }
     ]
   },
-  "description": "Deep dive into individual IoT device behavior, sensor patterns, and health",
+  "description": "One device at a time: its stream, RRCF scores, local training and held-out accuracy.",
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 2,
+  "graphTooltip": 1,
   "id": null,
   "links": [
     {
-      "asDropdown": true,
+      "asDropdown": false,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
-      "tags": ["flead"],
-      "title": "FLEAD Dashboards",
-      "type": "dashboards"
+      "tags": [
+        "flead"
+      ],
+      "targetBlank": false,
+      "title": "FLEAD dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
     }
   ],
-  "liveNow": true,
+  "liveNow": false,
   "panels": [
     {
-      "id": 100,
-      "type": "row",
-      "title": "📱 Device Overview",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "collapsed": false
-    },
-    {
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "options": {
+        "mode": "markdown",
+        "content": "### Devices\nPick a device above, or click one in a table. Per-device held-out accuracy rests on a small sample (a few readings per evaluation); the fleet line is the reliable measure.  \n**[Federated learning & privacy](/d/flead-fl-lab)** · **[Anomalies](/d/flead-anomaly)** · **[Devices](/d/flead-device)** · **[Operations](/d/flead-ops)** · [Live monitor ↗](http://localhost:5001) · [Device viewer ↗](http://localhost:8082)"
+      },
       "id": 1,
-      "type": "stat",
-      "title": "Total Devices",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(DISTINCT device_id) AS value FROM iot_data;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#00D4FF", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value_and_name"
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
       }
     },
     {
+      "type": "row",
+      "title": "$device in the selected range",
+      "collapsed": false,
+      "panels": [],
       "id": 2,
-      "type": "stat",
-      "title": "Active (1h)",
-      "description": "Devices with activity in last hour",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(DISTINCT device_id) AS value FROM iot_data;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#2ECC40", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
       }
     },
     {
-      "id": 3,
       "type": "stat",
-      "title": "With Anomalies",
-      "description": "Devices that have reported anomalies",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "title": "Readings stored",
+      "description": "Readings of this device stored in range (one every ~16 s).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(DISTINCT device_id) AS value FROM anomalies WHERE $__timeFilter(ts);"
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM iot_data WHERE device_id = '$device' AND $__timeFilter(ts)"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#2ECC40", "value": null },
-              { "color": "#FF851B", "value": 10 },
-              { "color": "#FF4136", "value": 50 }
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Attack readings",
+      "description": "Share of this device's stored readings labelled as attacks.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT AVG(label)::float AS value FROM iot_data WHERE device_id = '$device' AND $__timeFilter(ts)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#94a3b8",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Anomalies flagged",
+      "description": "Readings RRCF flagged for this device in range.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM anomalies WHERE device_id = '$device' AND $__timeFilter(ts)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "RRCF precision",
+      "description": "Precision of RRCF for this device.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT AVG(label)::float AS value FROM anomalies WHERE device_id = '$device' AND $__timeFilter(ts)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Local models",
+      "description": "Local training rounds of this device in range.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM local_models WHERE device_id = '$device' AND $__timeFilter(created_at)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 7,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Held-out accuracy",
+      "description": "Latest global model on this device's held-out sample; a small sample, so it jumps.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT model_accuracy AS value FROM model_evaluations WHERE device_id = '$device' ORDER BY evaluation_timestamp DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 8,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stream metric",
+      "description": "The stream metric of each reading. RRCF scores all 46 features, not only this one.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS time, value AS \"tcp.ack (standardized)\" FROM iot_data WHERE device_id = '$device' AND $__timeFilter(ts) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tcp.ack (standardized)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
             ]
           }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Training Devices",
-      "description": "Devices participating in federated learning",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(DISTINCT device_id) AS value FROM local_models WHERE $__timeFilter(created_at);"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#9D70F9", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 5,
-      "type": "stat",
-      "title": "Avg Value",
-      "description": "Average sensor reading across all devices",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, ROUND(AVG(value)::numeric, 2) AS value FROM iot_data;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "decimals": 2,
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#4ECDC4", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 6,
-      "type": "stat",
-      "title": "Data Points",
-      "description": "Total IoT readings in time range",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT now() AS time, COUNT(*) AS value FROM iot_data;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#FFE66D", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 101,
-      "type": "row",
-      "title": "📊 Device Selection: $device",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
-      "collapsed": false,
-      "repeat": "device",
-      "repeatDirection": "h"
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "📈 Sensor Readings: $device",
-      "description": "Raw sensor values over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 6 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT ts AS time, value AS \"Sensor Value\" FROM iot_data WHERE device_id = '$device' ORDER BY ts;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "gradientMode": "opacity",
-            "showPoints": "auto",
-            "pointSize": 3
-          }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Sensor Value" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00D4FF", "mode": "fixed" } }] }
         ]
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["min", "mean", "max", "last"] },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
       }
     },
     {
-      "id": 11,
-      "type": "stat",
-      "title": "Device Stats",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
-      "targets": [
-        {
-          "refId": "Messages",
-          "format": "table",
-          "rawSql": "SELECT 'Total Messages' AS metric, COUNT(*)::text AS value FROM iot_data WHERE device_id = '$device';"
-        },
-        {
-          "refId": "Anomalies",
-          "format": "table",
-          "rawSql": "SELECT 'Anomalies' AS metric, COUNT(*)::text AS value FROM anomalies WHERE $__timeFilter(ts) AND device_id = '$device';"
-        },
-        {
-          "refId": "Models",
-          "format": "table",
-          "rawSql": "SELECT 'Local Models' AS metric, COUNT(*)::text AS value FROM local_models WHERE $__timeFilter(created_at) AND device_id = '$device';"
-        },
-        {
-          "refId": "Accuracy",
-          "format": "table",
-          "rawSql": "SELECT 'Best Accuracy' AS metric, COALESCE(ROUND(MAX(accuracy)::numeric * 100, 1)::text || '%', 'N/A') AS value FROM local_models WHERE $__timeFilter(created_at) AND device_id = '$device';"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#4ECDC4", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^value$/", "values": false },
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
-      "transformations": [{ "id": "merge" }]
-    },
-    {
-      "id": 12,
       "type": "timeseries",
-      "title": "🔥 Anomaly Score Timeline: $device",
-      "description": "Anomaly detection scores over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
+      "title": "RRCF scores of flagged readings",
+      "description": "One point per flagged reading.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
           "format": "time_series",
-          "rawSql": "SELECT ts AS time, anomaly_score AS \"RCF Score\" FROM anomalies WHERE $__timeFilter(ts) AND device_id = '$device' ORDER BY ts;"
+          "rawSql": "SELECT ts AS time, anomaly_score AS \"RRCF score\" FROM anomalies WHERE device_id = '$device' AND $__timeFilter(ts) ORDER BY 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "min": 0,
-          "max": 1,
-          "color": { "mode": "continuous-RdYlGn", "seriesBy": "last" },
           "custom": {
             "drawStyle": "points",
-            "pointSize": 8,
-            "fillOpacity": 0,
-            "showPoints": "always"
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "always",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 2,
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RRCF score"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f97316"
+                }
+              }
+            ]
           }
-        }
+        ]
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
       }
     },
     {
-      "id": 13,
       "type": "timeseries",
-      "title": "🎯 Model Accuracy Trend: $device",
-      "description": "Local model accuracy over training iterations",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 14 },
+      "title": "Local training accuracy",
+      "description": "Accuracy on the device's own recent training window.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
           "format": "time_series",
-          "rawSql": "SELECT created_at AS time, accuracy * 100 AS \"Accuracy %\" FROM local_models WHERE $__timeFilter(created_at) AND device_id = '$device' ORDER BY created_at;"
+          "rawSql": "SELECT created_at AS time, accuracy AS \"Local training accuracy\" FROM local_models WHERE device_id = '$device' AND $__timeFilter(created_at) ORDER BY 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "color": { "mode": "palette-classic" },
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "points",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "always",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Local training accuracy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Held-out accuracy: device vs fleet",
+      "description": "The fleet line uses about 20,000 held-out readings; the device line only this device's few.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, model_accuracy AS \"This device\" FROM model_evaluations WHERE device_id = '$device' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, model_accuracy AS \"Fleet\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "fillOpacity": 20,
-            "showPoints": "always",
-            "pointSize": 6
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
           }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Accuracy %" }, "properties": [{ "id": "color", "value": { "fixedColor": "#2ECC40", "mode": "fixed" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "This device"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f59e0b"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fleet"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          }
         ]
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["min", "mean", "max"] },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 12,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
       }
     },
     {
-      "id": 102,
       "type": "row",
-      "title": "📋 Device Fleet Overview",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
-      "collapsed": false
+      "title": "Fleet",
+      "collapsed": false,
+      "panels": [],
+      "id": 13,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      }
     },
     {
-      "id": 20,
       "type": "table",
-      "title": "📱 Device Fleet Status",
-      "description": "Complete device inventory with health metrics",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 22 },
+      "title": "Devices by anomalies in range",
+      "description": "Click a device to select it.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
           "format": "table",
-          "rawSql": "WITH device_stats AS (\n  SELECT\n    device_id,\n    COUNT(*) AS msg_count,\n    ROUND(AVG(value)::numeric, 2) AS avg_value,\n    ROUND(MIN(value)::numeric, 2) AS min_value,\n    ROUND(MAX(value)::numeric, 2) AS max_value,\n    MAX(ts) AS last_seen\n  FROM iot_data\n  GROUP BY device_id\n),\nanomaly_stats AS (\n  SELECT device_id, COUNT(*) AS anomaly_count, ROUND(AVG(anomaly_score)::numeric, 3) AS avg_score\n  FROM anomalies GROUP BY device_id\n),\nmodel_stats AS (\n  SELECT device_id, COUNT(*) AS model_count, ROUND(MAX(accuracy)::numeric * 100, 1) AS best_accuracy\n  FROM local_models GROUP BY device_id\n)\nSELECT\n  d.device_id AS \"Device\",\n  d.msg_count AS \"Messages\",\n  d.avg_value AS \"Avg Value\",\n  d.min_value AS \"Min\",\n  d.max_value AS \"Max\",\n  COALESCE(a.anomaly_count, 0) AS \"Anomalies\",\n  COALESCE(a.avg_score, 0) AS \"Avg Score\",\n  COALESCE(m.model_count, 0) AS \"Models\",\n  COALESCE(m.best_accuracy, 0) AS \"Best Acc %\",\n  d.last_seen AS \"Last Seen\",\n  CASE\n    WHEN COALESCE(a.anomaly_count, 0) > 10 THEN '🔴 Critical'\n    WHEN COALESCE(a.anomaly_count, 0) > 3 THEN '🟠 Warning'\n    ELSE '🟢 Healthy'\n  END AS \"Status\"\nFROM device_stats d\nLEFT JOIN anomaly_stats a ON d.device_id = a.device_id\nLEFT JOIN model_stats m ON d.device_id = m.device_id\nORDER BY d.msg_count DESC\nLIMIT 100;"
+          "rawSql": "SELECT device_id AS \"Device\", COUNT(*) AS \"Anomalies\", COUNT(*) FILTER (WHERE severity = 'critical') AS \"Critical\", ROUND(AVG(label)::numeric * 100, 1) AS \"Attacks %\", MAX(ts) AS \"Last flagged\" FROM anomalies WHERE $__timeFilter(ts) GROUP BY device_id ORDER BY 2 DESC LIMIT 50"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true, "inspect": true }
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "minWidth": 80
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Messages" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient", "valueDisplayMode": "text" } }, { "id": "color", "value": { "mode": "continuous-BlYlRd" } }, { "id": "min", "value": 0 }] },
-          { "matcher": { "id": "byName", "options": "Anomalies" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "transparent", "value": null }, { "color": "#FFDC00", "value": 1 }, { "color": "#FF851B", "value": 5 }, { "color": "#FF4136", "value": 10 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "Best Acc %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "basic", "valueDisplayMode": "text" } }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } }, { "id": "min", "value": 0 }, { "id": "max", "value": 100 }] },
-          { "matcher": { "id": "byName", "options": "Last Seen" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-          { "matcher": { "id": "byName", "options": "Status" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Device"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in Devices dashboard",
+                    "url": "/d/flead-device?var-device=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "footer": { "show": true, "reducer": ["sum"], "fields": ["Messages", "Anomalies", "Models"] } }
-    },
-    {
-      "id": 103,
-      "type": "row",
-      "title": "🔥 Heatmaps & Patterns",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
-      "collapsed": false
-    },
-    {
-      "id": 30,
-      "type": "heatmap",
-      "title": "🌡️ Device Value Heatmap (Hourly)",
-      "description": "Sensor value patterns across devices over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 35 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT time_bucket('1 minute', ts) AS time, device_id, ROUND(AVG(value)::numeric, 2) AS value FROM iot_data GROUP BY 1, device_id ORDER BY 1, device_id LIMIT 5000;"
-        }
-      ],
-      "fieldConfig": { "defaults": {} },
       "options": {
-        "calculate": false,
-        "cellGap": 1,
-        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 128, "reverse": true },
-        "yAxis": { "reverse": false },
-        "tooltip": { "show": true },
-        "legend": { "show": true }
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "id": 14,
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 26
       }
     }
   ],
-  "refresh": "10s",
+  "refresh": "30s",
   "schemaVersion": 39,
-  "style": "dark",
-  "tags": ["flead", "iot", "devices"],
+  "tags": [
+    "flead",
+    "devices"
+  ],
   "templating": {
     "list": [
       {
-        "allValue": "",
-        "current": {},
-        "datasource": "FLEAD-TimescaleDB",
-        "definition": "SELECT DISTINCT device_id FROM iot_data ORDER BY device_id LIMIT 100",
-        "hide": 0,
-        "includeAll": false,
-        "label": "Device",
-        "multi": false,
         "name": "device",
-        "options": [],
-        "query": "SELECT DISTINCT device_id FROM iot_data ORDER BY device_id LIMIT 100;",
-        "refresh": 2,
+        "label": "Device",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "flead-timescaledb"
+        },
+        "query": "SELECT 'device_' || n FROM generate_series(0, 2399) AS n ORDER BY n",
+        "definition": "SELECT 'device_' || n FROM generate_series(0, 2399) AS n ORDER BY n",
+        "refresh": 1,
+        "sort": 0,
+        "multi": false,
+        "hide": 0,
         "regex": "",
         "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
+        "includeAll": false,
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": "device_0",
+          "value": "device_0"
+        }
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
-  "timepicker": {
-    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"],
-    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d"]
+  "time": {
+    "from": "now-1h",
+    "to": "now"
   },
+  "timepicker": {},
   "timezone": "browser",
-  "title": "FLEAD - Device Explorer",
+  "title": "FLEAD - Devices",
   "uid": "flead-device",
   "version": 1,
   "weekStart": ""

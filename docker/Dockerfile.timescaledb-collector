@@ -24,13 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY scripts/config_loader.py ./scripts/
 COPY scripts/kafka_to_timescaledb_collector.py ./scripts/
 
-# Environment variables (override from compose if needed)
+# Database settings come from docker-compose (config_loader has local-demo defaults)
 ENV PYTHONUNBUFFERED=1
-ENV DB_HOST=timescaledb
-ENV DB_PORT=5432
-ENV DB_NAME=flead
-ENV DB_USER=flead
-ENV DB_PASSWORD=password
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka-broker-1:9092
 
 # Run collector

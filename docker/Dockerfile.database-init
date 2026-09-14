@@ -19,18 +19,12 @@ COPY requirements/database-init.txt requirements.txt
 # Install ONLY the Python libs needed for DB init
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files and SQL scripts
+# Copy application files (the schema is defined inline in 00_init_database.py)
 COPY scripts/config_loader.py ./scripts/
 COPY scripts/00_init_database.py ./scripts/
-COPY sql/ ./sql/
 
-# Set environment variables
+# Database settings come from docker-compose (config_loader has local-demo defaults)
 ENV PYTHONUNBUFFERED=1
-ENV DB_HOST=timescaledb
-ENV DB_PORT=5432
-ENV DB_NAME=flead
-ENV DB_USER=flead
-ENV DB_PASSWORD=password
 
 # Simple startup script to wait briefly for DB and then run the init
 RUN echo '#!/bin/bash\n\

@@ -1,0 +1,9 @@
+# Shell scripts must keep LF endings, or ./start and ./stop fail under
+# WSL/Linux ("/usr/bin/env: 'bash\r': No such file or directory") when the
+# repo is checked out on Windows with core.autocrlf=true.
+start text eol=lf
+stop text eol=lf
+*.sh text eol=lf
+
+# Windows batch files need CRLF.
+*.bat text eol=crlf

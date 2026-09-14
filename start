@@ -2,7 +2,7 @@
 # ============================================================================
 # FLEAD Platform Startup Script (Linux/macOS/WSL)
 # Single-broker Kafka mode - starts all Docker services and pipeline
-# Usage: ./start [--fast] [--no-wait] [--safe]
+# Usage: ./start [--fast] [--no-wait] [--safe] [--no-browser]
 # ============================================================================
 set -e
 
@@ -84,12 +84,14 @@ echo "===================================================================="
 echo "CLEANUP PHASE (POSIX)"
 echo "===================================================================="
 echo
-"${DOCKER_COMPOSE[@]}" down || true
+"${DOCKER_COMPOSE[@]}" down --remove-orphans || true
+# spark-analytics is the old name of dashboard-metrics-updater
 docker container rm -f zookeeper kafka timescaledb grafana kafka-ui \
   flink-jobmanager flink-taskmanager spark-master spark-worker-1 \
   kafka-broker-1 \
   timescaledb-collector federated-aggregator device-viewer \
-  monitoring-dashboard grafana-init database-init 2>/dev/null || true
+  monitoring-dashboard grafana-init database-init data-preprocessor \
+  spark-analytics dashboard-metrics-updater 2>/dev/null || true
 
 echo "Done"
 echo
@@ -98,7 +100,8 @@ echo "===================================================================="
 echo "DOCKER SERVICES STARTUP (POSIX)"
 echo "===================================================================="
 echo
-"${DOCKER_COMPOSE[@]}" up -d
+# --build rebuilds images whose Dockerfile or requirements changed (cached otherwise)
+"${DOCKER_COMPOSE[@]}" up -d --build
 echo
 
 echo "Waiting 30 seconds for services to come up (single-broker setup)..."
@@ -142,6 +145,10 @@ echo "  Kafka UI:                 http://localhost:8081"
 echo "  Device Viewer Website:    http://localhost:8082"
 echo "  Flink Dashboard:          http://localhost:8161"
 echo "  Spark Master:             http://localhost:8086"
+echo "  Spark Worker:             http://localhost:8087"
+echo "  Jupyter Dev UI:           http://localhost:8888"
+echo "  Prometheus:               http://localhost:9090"
+echo "  Alertmanager:             http://localhost:9093"
 echo "  TimescaleDB:              localhost:5432"
 echo
 echo "LOGS:"

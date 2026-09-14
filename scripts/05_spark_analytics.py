@@ -12,7 +12,6 @@ import logging
 import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-import pickle
 from pathlib import Path
 
 import psycopg2
@@ -26,14 +25,11 @@ from pyspark.sql.functions import (
     count,
     min as spark_min,
     max as spark_max,
-    when,
     lit,
     to_timestamp,
     to_date,
     window as spark_window,
     from_json,
-    least,
-    abs,
 )
 from pyspark.sql.types import (
     StructType,
@@ -58,7 +54,8 @@ logger = logging.getLogger(__name__)
 # CONFIG LOADER (shared helpers)
 # ---------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(__file__))
-from config_loader import get_db_config, get_kafka_config  # noqa: E402
+from config_loader import get_db_config, get_kafka_config, get_stream_config  # noqa: E402
+from evaluation_metrics import classification_metrics, score_fleet_windows  # noqa: E402
 
 # ---------------------------------------------------------------------
 # CONFIGURATION
@@ -92,113 +89,68 @@ SPARK_PARALLELISM = 4
 
 # Analysis
 BATCH_WINDOW_HOURS = 24
-# Note: Spark uses statistical anomaly detection (stddev-based)
-# This is complementary to Flink's RCF-based detection
-ANOMALY_THRESHOLD_STD = 2.5  # Stddev threshold for Spark stream analysis
+# Stream analysis flags a device whose 30-second mean reading deviates from the
+# fleet mean in the same window by more than this many fleet standard
+# deviations (fleet z-score, see evaluation_metrics.score_fleet_windows).
+# Complementary to Flink's RRCF, which compares a device with its own past.
+ANOMALY_THRESHOLD_STD = 3.0
+
+# Global model evaluation
+EVAL_SAMPLE_FRACTION = 0.05          # Sample of held-out device rows used for evaluation
+EVALUATION_INTERVAL_SECONDS = 120    # How often to check for a new global model version
+# The producer streams only the first rows of each device file; evaluation uses
+# the remaining rows, so the global model is scored on readings no device trained on.
+STREAM_CONFIG = get_stream_config()
 
 # Global model location – shared with federated aggregator
 MODEL_DIR = Path("/app/models/global")
 
 # ---------------------------------------------------------------------
-# Global Model placeholder (needed to unpickle models saved by aggregator)
-# ---------------------------------------------------------------------
-class GlobalModel:
-    def __init__(self, version: int = 0):
-        self.version = version
-        self.weights = None
-        self.accuracy = 0.0
-        self.created_at = datetime.now()
-        self.num_devices_aggregated = 0
-        self.aggregation_round = 0
-
-
-# ---------------------------------------------------------------------
 # Global Model Evaluator
 # ---------------------------------------------------------------------
 class GlobalModelEvaluator:
-    """Load and use global federated model for evaluation"""
+    """Loads the latest FedAvg global model published by the aggregator."""
+
+    LATEST_JSON = "global_model_latest.json"
 
     def __init__(self, base_dir: Path = MODEL_DIR):
         self.base_dir = base_dir
-        self.model = None          # Loaded GlobalModel object
+        self.model: Optional[Dict[str, Any]] = None
         self.model_version = None
         self.accuracy = 0.0
         self._load_latest_model()
 
     def _load_latest_model(self) -> bool:
-        """Scan /app/models/global for global_model_v*.pkl and load the latest one."""
+        """
+        Read global_model_latest.json (parameters + metadata). The aggregator
+        rewrites it atomically every round. JSON is used instead of the pickle
+        snapshots, which depend on the aggregator's class and numpy versions.
+        """
+        path = self.base_dir / self.LATEST_JSON
         try:
-            if not self.base_dir.exists():
-                logger.warning(f"⚠ Global model directory not found: {self.base_dir}")
-                return False
-
-            candidates = sorted(self.base_dir.glob("global_model_v*.pkl"))
-            if not candidates:
-                logger.warning("⚠ No global_model_v*.pkl files found for evaluation")
-                return False
-
-            # Pick highest version based on filename vN
-            def _extract_version(p: Path) -> int:
-                # global_model_v{N}.pkl
-                stem = p.stem  # global_model_vN
-                try:
-                    return int(stem.split("v")[-1])
-                except Exception:
-                    return 0
-
-            latest_path = max(candidates, key=_extract_version)
-
-            with open(latest_path, "rb") as f:
-                loaded = pickle.load(f)
-
-            # Expect this to be a GlobalModel instance as saved by federated_aggregator
-            self.model = loaded
-            self.model_version = getattr(loaded, "version", None)
-            self.accuracy = float(getattr(loaded, "accuracy", 0.0))
-
-            logger.info(
-                "✓ Loaded global model v%s (accuracy: %.2f%%) from %s",
-                self.model_version,
-                self.accuracy * 100.0,
-                latest_path,
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"✗ Error loading global model: {e}", exc_info=True)
+            with open(path, encoding="utf-8") as f:
+                model = json.load(f)
+        except FileNotFoundError:
+            logger.warning("⚠ No global model published yet at %s", path)
+            return False
+        except (OSError, ValueError) as e:
+            logger.error("✗ Error loading global model: %s", e)
             return False
 
-    def evaluate_anomaly(self, features: Dict[str, float]) -> Dict[str, Any]:
-        """
-        Use global model to evaluate anomaly.
+        if not model.get("weights"):
+            logger.warning("⚠ Global model at %s has no parameters", path)
+            return False
 
-        For now, we mostly return metadata:
-        - If model is available: use its accuracy as a "confidence" proxy.
-        - If not: fall back to a simple statistical placeholder.
-        """
-        try:
-            if self.model is None:
-                return {
-                    "is_anomaly": False,
-                    "confidence": 0.0,
-                    "method": "statistical_fallback",
-                }
-
-            # In a real system, you’d call model.predict(features) here.
-            # We just report that the model was used.
-            return {
-                "is_anomaly": False,
-                "confidence": self.accuracy,
-                "method": "global_model",
-                "model_version": self.model_version,
-            }
-        except Exception as e:
-            logger.error(f"Error in model evaluation: {e}", exc_info=True)
-            return {
-                "is_anomaly": False,
-                "confidence": 0.0,
-                "method": "error",
-            }
+        self.model = model
+        self.model_version = model.get("version")
+        self.accuracy = float(model.get("accuracy", 0.0))
+        logger.info(
+            "✓ Loaded global model v%s (%d features, mean local training accuracy %.2f%%)",
+            self.model_version,
+            len(model["weights"]),
+            self.accuracy * 100.0,
+        )
+        return True
 
 
 # ---------------------------------------------------------------------
@@ -206,11 +158,11 @@ class GlobalModelEvaluator:
 # ---------------------------------------------------------------------
 class TimescaleDBManager:
     """
-    Handles writes into:
-      - batch_analysis_results(analysis_type, result_data JSONB, created_at)
-      - stream_analysis_results(window_start, window_end, analysis_data JSONB, created_at)
-      - model_evaluations(global_version, evaluation_data JSONB, accuracy, created_at)
-      - dashboard_metrics(metric_name, metric_value, metric_type, created_at, updated_at)
+    Writes Spark results into the tables created by 00_init_database.py:
+      - batch_analysis_results  (per device/day statistics of the stream metric)
+      - stream_analysis_results (30-second window means with fleet z-scores)
+      - model_evaluations       (held-out metrics of each global model version)
+      - dashboard_metrics       (KPIs for Grafana)
     """
 
     def __init__(self):
@@ -278,8 +230,8 @@ class TimescaleDBManager:
     def insert_stream_results(self, results: List[Dict[str, Any]]) -> None:
         """
         Insert stream analysis results into stream_analysis_results table
-        (device_id, metric_name, raw_value, moving_avg_30s, moving_avg_5m,
-        anomaly_score, is_anomaly, anomaly_confidence, detection_method, timestamp).
+        (device_id, metric_name, raw_value, moving_avg_30s, anomaly_score,
+        is_anomaly, anomaly_confidence, detection_method, timestamp).
         """
         if not results or not self.conn:
             return
@@ -294,11 +246,10 @@ class TimescaleDBManager:
                         r.get("metric_name", "data_metric"),
                         r.get("raw_value"),
                         r.get("moving_avg_30s"),
-                        r.get("moving_avg_5m"),
                         r.get("anomaly_score"),
                         bool(r.get("is_anomaly")) if r.get("is_anomaly") is not None else False,
                         r.get("anomaly_confidence"),
-                        r.get("detection_method", "spark_stddev"),
+                        r.get("detection_method", "fleet_zscore"),
                         r.get("window_end") or r.get("window_start") or now_ts,
                     )
                 )
@@ -310,7 +261,6 @@ class TimescaleDBManager:
                         metric_name,
                         raw_value,
                         moving_avg_30s,
-                        moving_avg_5m,
                         anomaly_score,
                         is_anomaly,
                         anomaly_confidence,
@@ -329,26 +279,37 @@ class TimescaleDBManager:
     # --------------------- Model Evaluations ---------------------
     def insert_model_evaluations(self, evaluations: List[Dict[str, Any]]) -> None:
         """
-        Insert evaluations into model_evaluations:
-          - global_version (from evaluation['model_version'])
-          - evaluation_data JSONB (full dict)
-          - accuracy (from evaluation['model_accuracy'])
+        Insert global-model evaluation metrics into model_evaluations
+        (one row per device plus an overall row with device_id 'ALL').
         """
         if not evaluations or not self.conn:
             return
 
         try:
-            payload = []
-            for e in evaluations:
-                model_version = e.get("model_version") or 0
-                accuracy = float(e.get("model_accuracy", 0.0))
-                eval_json = json.dumps(e)
-                payload.append((model_version, eval_json, accuracy))
+            payload = [
+                (
+                    str(e["model_version"]),
+                    e["device_id"],
+                    e["accuracy"],
+                    e["precision"],
+                    e["recall"],
+                    e["f1_score"],
+                    e["sample_count"],
+                    e["true_positives"],
+                    e["false_positives"],
+                    e["false_negatives"],
+                    e["true_negatives"],
+                )
+                for e in evaluations
+            ]
 
             with self.conn.cursor() as cur:
                 query = """
-                    INSERT INTO model_evaluations (global_version, evaluation_data, accuracy)
-                    VALUES %s
+                    INSERT INTO model_evaluations (
+                        model_version, device_id, model_accuracy,
+                        precision, recall, f1_score, sample_count,
+                        true_positives, false_positives, false_negatives, true_negatives
+                    ) VALUES %s
                 """
                 execute_values(cur, query, payload)
                 self.conn.commit()
@@ -403,6 +364,10 @@ class SparkAnalyticsEngine:
         self.spark = self._create_spark_session()
         self.db = TimescaleDBManager()
         self.model_eval = GlobalModelEvaluator()
+        # Overall held-out metrics of the last evaluated global model
+        self.last_heldout: Optional[Dict[str, Any]] = None
+        # Cached held-out sample used to evaluate every new global model
+        self.eval_df: Optional[DataFrame] = None
 
     def _create_spark_session(self) -> SparkSession:
         """Create Spark session configured for our cluster."""
@@ -418,38 +383,69 @@ class SparkAnalyticsEngine:
         return session
 
     # ===================== BATCH ANALYSIS =====================
-    def run_batch_analysis(self, window_hours: int = BATCH_WINDOW_HOURS) -> None:
+    def run_batch_analysis(self, window_hours: int = BATCH_WINDOW_HOURS) -> List[Dict[str, Any]]:
         """
-        Batch analysis from CSVs in /opt/spark/data/processed.
-        Note: We guard against missing columns (device_id, timestamp, temperature).
+        Batch analysis over the per-device CSVs in /opt/spark/data/processed.
+
+        The device CSVs have no device_id column (the device is the file name)
+        and no "temperature" column — the monitored metric is the same one the
+        Kafka producer streams (flow_duration, falling back to Rate). The old
+        version required device_id + temperature and therefore always skipped.
+
+        Returns the aggregated rows so they can be evaluated with the global model.
         """
+        import pyspark.sql.functions as F
+
         logger.info("🔄 Starting batch analysis on CSV files...")
-        csv_path = "/opt/spark/data/processed/*.csv"
+        csv_path = "/opt/spark/data/processed/device_*.csv"
 
         try:
-            # Enable inferSchema to avoid manual schema definition
             df = (
                 self.spark.read.option("header", "true")
                 .option("inferSchema", "true")
+                # 2,400 files / ~800 MB: infer column types from a sample
+                # instead of an extra full pass over the data.
+                .option("samplingRatio", "0.1")
                 .csv(csv_path)
             )
 
             if df.rdd.isEmpty():
                 logger.warning("⚠ No CSV data found for batch analysis at %s", csv_path)
-                return
+                return []
 
-            required_cols = {"device_id", "timestamp", "temperature"}
-            missing = required_cols - set(df.columns)
-            if missing:
+            # Same metric precedence as 02_kafka_producer.py
+            metric_col = next(
+                (c for c in ("flow_duration", "Rate", "tcp.ack", "tcp.seq") if c in df.columns),
+                None,
+            )
+            if metric_col is None or "timestamp" not in df.columns:
                 logger.warning(
-                    "⚠ Missing columns %s in CSV data. Skipping batch analysis.",
-                    ", ".join(sorted(missing)),
+                    "⚠ CSV data has no known metric column or timestamp column. Skipping batch analysis."
                 )
-                return
+                return []
 
-            # Cast columns if they exist
-            df = df.withColumn("timestamp", to_timestamp(col("timestamp"))) \
-                   .withColumn("temperature", col("temperature").cast("double"))
+            df = (
+                df.withColumn(
+                    "device_id",
+                    F.regexp_extract(F.input_file_name(), r"(device_\d+)\.csv$", 1),
+                )
+                .withColumn("timestamp", to_timestamp(col("timestamp")))
+                # Backticks: Edge-IIoTset names contain dots ("tcp.ack"), which
+                # Spark would otherwise parse as struct field access.
+                .withColumn("metric_value", col(f"`{metric_col}`").cast("double"))
+            )
+
+            if "label" in df.columns:
+                first_unseen_row = F.lit(STREAM_CONFIG["device_csv_start"]).cast("timestamp") + F.expr(
+                    f"INTERVAL {STREAM_CONFIG['stream_rows_per_device']} SECONDS"
+                )
+                if self.eval_df is not None:
+                    self.eval_df.unpersist()
+                self.eval_df = (
+                    df.filter(col("timestamp") >= first_unseen_row)
+                    .sample(fraction=EVAL_SAMPLE_FRACTION, seed=42)
+                    .cache()
+                )
 
             daily_agg = (
                 df.groupBy(
@@ -457,42 +453,57 @@ class SparkAnalyticsEngine:
                     to_date(col("timestamp")).alias("analysis_date"),
                 )
                 .agg(
-                    avg(col("temperature")).alias("avg_value"),
-                    stddev(col("temperature")).alias("stddev_value"),
-                    spark_min(col("temperature")).alias("min_value"),
-                    spark_max(col("temperature")).alias("max_value"),
+                    avg(col("metric_value")).alias("avg_value"),
+                    stddev(col("metric_value")).alias("stddev_value"),
+                    spark_min(col("metric_value")).alias("min_value"),
+                    spark_max(col("metric_value")).alias("max_value"),
                     count("*").alias("sample_count"),
                 )
-                .withColumn("metric_name", lit("temperature"))
+                .withColumn("metric_name", lit(metric_col))
             )
-
-            logger.info("✓ Batch aggregation completed")
 
             rows = daily_agg.collect()
             batch_dicts = [r.asDict() for r in rows]
+            logger.info("✓ Batch aggregation completed (%d device-day rows)", len(batch_dicts))
             self.db.insert_batch_results(batch_dicts)
+            return batch_dicts
 
         except Exception as e:
             logger.error(f"✗ Batch analysis error: {e}", exc_info=True)
+            return []
 
     # ===================== STREAM ANALYSIS =====================
     def _write_stream_batch(self, df: DataFrame, epoch_id: int) -> None:
-        """foreachBatch sink to TimescaleDB for stream analysis output."""
+        """
+        foreachBatch sink: score each 30-second window against the fleet and
+        write the results to TimescaleDB.
+
+        The previous score divided a window's mean by its own standard
+        deviation (a signal-to-noise ratio, not a deviation from normal), with
+        a fixed "confidence" of 0.95 for every flag.
+        """
         try:
             rows = [r.asDict() for r in df.collect()]
             if rows:
-                self.db.insert_stream_results(rows)
-                logger.info("✓ Stream batch %s: wrote %d rows", epoch_id, len(rows))
+                scored = score_fleet_windows(rows, ANOMALY_THRESHOLD_STD)
+                if not hasattr(self, "stream_db"):
+                    # Separate connection: foreachBatch runs on Spark's streaming
+                    # thread while batch analysis uses self.db on the main thread.
+                    self.stream_db = TimescaleDBManager()
+                self.stream_db.insert_stream_results(scored)
+                flagged = sum(1 for s in scored if s["is_anomaly"])
+                logger.info("✓ Stream batch %s: wrote %d windows (%d fleet outliers)",
+                            epoch_id, len(scored), flagged)
         except Exception as e:
             logger.error(f"Error writing stream batch {epoch_id}: {e}", exc_info=True)
 
-    def run_stream_analysis(self, run_seconds: Optional[int] = None) -> None:
+    def run_stream_analysis(self, run_seconds: Optional[int] = None, wait: bool = True):
         """
         Real-time stream analysis from Kafka topic edge-iiot-stream.
 
         - reads JSON messages with: device_id, timestamp, data
-        - computes 30s moving stats by device
-        - writes windowed stats into TimescaleDB
+        - computes each device's mean reading per 30-second event-time window
+        - scores every window against the fleet (see _write_stream_batch)
         """
         logger.info("🔄 Starting stream analysis from Kafka...")
 
@@ -521,49 +532,39 @@ class SparkAnalyticsEngine:
                 "event_time", to_timestamp(col("timestamp"))
             ).withWatermark("event_time", "1 minute")
 
-            windowed = (
+            result = (
                 stream_data.groupBy(
                     col("device_id"),
                     spark_window(col("event_time"), "30 seconds").alias("time_window"),
                 )
                 .agg(
                     avg(col("data")).alias("moving_avg_30s"),
-                    stddev(col("data")).alias("stddev_30s"),
+                    count("*").alias("readings"),
                 )
-            )
-
-            result = windowed.select(
-                col("device_id"),
-                lit("data_metric").alias("metric_name"),
-                col("moving_avg_30s").alias("raw_value"),
-                col("moving_avg_30s"),
-                # Placeholder for a longer window:
-                lit(None).cast(DoubleType()).alias("moving_avg_5m"),
-                # Normalized score (stddev-based, scaled to 0-1 range for consistency with RCF)
-                least(lit(1.0), abs(col("moving_avg_30s") / (col("stddev_30s") + 0.001)) / 5.0).alias("anomaly_score"),
-                (abs(col("moving_avg_30s") / (col("stddev_30s") + 0.001)) > ANOMALY_THRESHOLD_STD).alias(
-                    "is_anomaly"
-                ),
-                when(
-                    (abs(col("moving_avg_30s") / (col("stddev_30s") + 0.001)) > ANOMALY_THRESHOLD_STD),
-                    0.95,
+                .select(
+                    col("device_id"),
+                    col("moving_avg_30s"),
+                    col("readings"),
+                    col("time_window.start").alias("window_start"),
+                    col("time_window.end").alias("window_end"),
                 )
-                .otherwise(0.0)
-                .alias("anomaly_confidence"),
-                lit("spark_stddev").alias("detection_method"),
-                col("time_window.start").alias("window_start"),
-                col("time_window.end").alias("window_end"),
-                col("time_window.end").alias("timestamp"),
             )
 
             query = (
                 result.writeStream.outputMode("append")
                 .foreachBatch(self._write_stream_batch)
                 .option("checkpointLocation", "/tmp/stream_checkpoint")
+                # Windows are 30 s long, so a micro-batch every 30 s loses
+                # nothing; without a trigger Spark ran micro-batches back to
+                # back and used about 1.5 CPU cores
+                .trigger(processingTime="30 seconds")
                 .start()
             )
 
             logger.info("✓ Stream analysis query started (foreachBatch sink)")
+
+            if not wait:
+                return query
 
             # If run_seconds is None, keep running until externally stopped.
             if run_seconds is None:
@@ -577,36 +578,95 @@ class SparkAnalyticsEngine:
             logger.error(f"✗ Stream analysis error: {e}", exc_info=True)
 
     # ===================== MODEL EVALUATION =====================
-    def evaluate_with_global_model(self, batch_results: List[Dict[str, Any]]) -> None:
+    def evaluate_global_model(self) -> None:
         """
-        Evaluate aggregated batch results using global federated model.
+        Score the latest FedAvg global model (logistic regression) on held-out
+        device rows and store accuracy, precision, recall and F1 per device and
+        overall.
 
-        For now, we just attach model metadata and store evaluation_data in TimescaleDB.
+        The previous version never applied the model: it always predicted
+        "normal" and stored the model's own accuracy figure as "confidence".
         """
-        logger.info("🔍 Evaluating batch results with global model (if available)...")
-        if not batch_results:
-            logger.info("No batch results to evaluate.")
+        import pyspark.sql.functions as F
+
+        model = self.model_eval.model
+        if not model or self.eval_df is None:
+            logger.info("Global model evaluation skipped (model or evaluation data not ready)")
             return
 
-        evaluations = []
-        for result in batch_results:
-            eval_res = self.model_eval.evaluate_anomaly(result)
-            eval_res["device_id"] = result.get("device_id")
-            eval_res["model_version"] = self.model_eval.model_version
-            eval_res["model_accuracy"] = self.model_eval.accuracy
-            evaluations.append(eval_res)
+        weights = model["weights"]
+        feature_names = [n for n in weights if n in self.eval_df.columns]
+        if not feature_names:
+            logger.warning("⚠ No global model features found in the evaluation data")
+            return
+
+        logger.info(
+            "🔍 Evaluating global model v%s on held-out rows (%d features)...",
+            model.get("version"),
+            len(feature_names),
+        )
+
+        logit = F.lit(float(model.get("bias", 0.0)))
+        for name in feature_names:
+            logit = logit + F.lit(float(weights[name])) * F.coalesce(
+                F.col(f"`{name}`").cast("double"), F.lit(0.0)
+            )
+
+        scored = self.eval_df.select(
+            "device_id",
+            F.col("label").cast("int").alias("actual"),
+            F.when(logit > 0, 1).otherwise(0).alias("predicted"),
+        )
+
+        def _count(condition):
+            return F.sum(F.when(condition, 1).otherwise(0))
+
+        per_device = scored.groupBy("device_id").agg(
+            F.count("*").alias("n"),
+            _count((col("predicted") == 1) & (col("actual") == 1)).alias("tp"),
+            _count((col("predicted") == 1) & (col("actual") == 0)).alias("fp"),
+            _count((col("predicted") == 0) & (col("actual") == 1)).alias("fn"),
+        ).collect()
+
+        def _row(device_id, n, tp, fp, fn):
+            metrics = classification_metrics(tp, fp, fn, n)
+            metrics.update({"model_version": model.get("version"), "device_id": device_id})
+            return metrics
+
+        evaluations = [_row(r["device_id"], r["n"], r["tp"], r["fp"], r["fn"]) for r in per_device]
+        totals = {k: sum(r[k] for r in per_device) for k in ("n", "tp", "fp", "fn")}
+        overall = _row("ALL", totals["n"], totals["tp"], totals["fp"], totals["fn"])
+        evaluations.append(overall)
 
         self.db.insert_model_evaluations(evaluations)
-        logger.info("✓ Stored %d model evaluation records", len(evaluations))
+        self.last_heldout = overall
+        logger.info(
+            "✓ Global model v%s on %d held-out rows: accuracy=%.2f%% precision=%.2f%% recall=%.2f%% F1=%.3f",
+            model.get("version"),
+            overall["sample_count"],
+            overall["accuracy"] * 100.0,
+            overall["precision"] * 100.0,
+            overall["recall"] * 100.0,
+            overall["f1_score"],
+        )
 
     # ===================== DASHBOARD METRICS =====================
-    def update_dashboard_metrics(self) -> None:
-        """Push high-level metrics into dashboard_metrics for Grafana."""
+    def update_dashboard_metrics(self, batch_rows: Optional[int] = None) -> None:
+        """Push Spark's own KPIs into dashboard_metrics for Grafana.
+
+        Only measured values are written: the number of device-day rows from
+        the batch pass (when given) and the held-out accuracy and F1 of the
+        last evaluated global model. The mean local training accuracy is not
+        written here because it does not measure the global model.
+        """
         try:
-            self.db.update_dashboard_metric("spark_batch_jobs_completed", 1.0)
-            self.db.update_dashboard_metric("stream_anomalies_detected", 42.0)
-            self.db.update_dashboard_metric("global_model_accuracy", float(self.model_eval.accuracy))
-            self.db.update_dashboard_metric("average_processing_latency", 2.5)
+            if batch_rows is not None:
+                self.db.update_dashboard_metric("spark_batch_device_day_rows", float(batch_rows))
+            if self.last_heldout is not None:
+                self.db.update_dashboard_metric(
+                    "global_model_heldout_accuracy", float(self.last_heldout["accuracy"]), "ratio")
+                self.db.update_dashboard_metric(
+                    "global_model_heldout_f1", float(self.last_heldout["f1_score"]), "ratio")
             logger.info("✓ Dashboard metrics updated")
         except Exception as e:
             logger.error(f"Error updating dashboard metrics: {e}", exc_info=True)
@@ -618,14 +678,25 @@ class SparkAnalyticsEngine:
         logger.info("=" * 70)
 
         try:
-            # 1) Batch analysis (from CSV)
-            self.run_batch_analysis()
+            # 1) Start stream analysis first so live results appear right away;
+            #    the batch pass over ~800 MB of device CSVs takes several minutes.
+            stream_query = self.run_stream_analysis(wait=False)
 
-            # 2) Stream analysis (from Kafka)
-            self.run_stream_analysis()
+            # 2) Batch analysis (from CSV); also prepares the evaluation sample
+            batch_results = self.run_batch_analysis()
+            self.update_dashboard_metrics(batch_rows=len(batch_results))
 
-            # 3) Dashboard metrics
-            self.update_dashboard_metrics()
+            # 3) While streaming runs, evaluate each new global model version
+            evaluated_version = None
+            while stream_query is not None and stream_query.isActive:
+                if (
+                    self.model_eval._load_latest_model()
+                    and self.model_eval.model_version != evaluated_version
+                ):
+                    self.evaluate_global_model()
+                    evaluated_version = self.model_eval.model_version
+                    self.update_dashboard_metrics()
+                stream_query.awaitTermination(EVALUATION_INTERVAL_SECONDS)
 
             logger.info("=" * 70)
             logger.info("✓ Spark analytics pipeline completed successfully")

@@ -29,5 +29,15 @@ logs amir
 
 next
 __pycache__
+.venv/
+.pytest_cache/
 logs oo
 data.rar
+
+# Reference papers and reports: kept locally, not published
+Papers/
+OST and SM Project*.pdf
+
+# Quarto build output of the case study
+docs/case-study/_site/
+docs/case-study/.quarto/

@@ -2,7 +2,7 @@
 REM ============================================================================
 REM FLEAD Platform Startup Script (Windows)
 REM Single-broker Kafka mode - starts all Docker services and pipeline
-REM Usage: START.bat [--fast] [--no-wait] [--safe]
+REM Usage: START.bat [--fast] [--no-wait] [--safe] [--no-browser]
 REM ============================================================================
 setlocal enabledelayedexpansion
 title FEDERATED LEARNING PLATFORM - COMPLETE PIPELINE STARTUP
@@ -108,14 +108,16 @@ echo ====================================================================
 echo.
 
 echo Cleaning up old Docker containers...
-docker compose down >nul 2>&1
+docker compose down --remove-orphans >nul 2>&1
 
-REM Extra hard cleanup (safe even if some containers don't exist)
+REM Extra hard cleanup (safe even if some containers don't exist).
+REM spark-analytics is the old name of dashboard-metrics-updater.
 docker container rm -f zookeeper kafka timescaledb grafana kafka-ui ^
     flink-jobmanager flink-taskmanager spark-master spark-worker-1 ^
     kafka-broker-1 ^
     timescaledb-collector federated-aggregator device-viewer ^
-    monitoring-dashboard grafana-init database-init >nul 2>&1
+    monitoring-dashboard grafana-init database-init data-preprocessor ^
+    spark-analytics dashboard-metrics-updater >nul 2>&1
 
 echo Done
 echo.
@@ -128,8 +130,8 @@ echo DOCKER SERVICES STARTUP (WINDOWS)
 echo ====================================================================
 echo.
 
-echo Starting Docker containers...
-docker compose up -d
+echo Starting Docker containers (rebuilding images whose Dockerfile or requirements changed)...
+docker compose up -d --build
 echo.
 
 echo Waiting 30 seconds for services to come up (single-broker setup)...
@@ -178,6 +180,10 @@ echo   Kafka UI:                 http://localhost:8081
 echo   Device Viewer Website:    http://localhost:8082
 echo   Flink Dashboard:          http://localhost:8161
 echo   Spark Master:             http://localhost:8086
+echo   Spark Worker:             http://localhost:8087
+echo   Jupyter Dev UI:           http://localhost:8888
+echo   Prometheus:               http://localhost:9090
+echo   Alertmanager:             http://localhost:9093
 echo   TimescaleDB:              localhost:5432
 echo.
 echo LOGS:

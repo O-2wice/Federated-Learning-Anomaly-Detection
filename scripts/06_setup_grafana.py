@@ -129,8 +129,31 @@ class GrafanaConfigurator:
             logger.error(f"✗ Error creating data source: {e}")
             return False
     
+    LEGACY_DASHBOARD_TITLE = "FLEAD - Federated Learning Monitoring"
+
+    def remove_legacy_dashboard(self) -> None:
+        """Delete the old API-created dashboard left over from earlier runs."""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/api/search",
+                params={"query": self.LEGACY_DASHBOARD_TITLE, "type": "dash-db"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            for item in response.json():
+                if item.get("title") == self.LEGACY_DASHBOARD_TITLE:
+                    deleted = self.session.delete(
+                        f"{self.base_url}/api/dashboards/uid/{item['uid']}", timeout=10
+                    )
+                    logger.info(
+                        "Removed legacy dashboard '%s' (uid=%s, HTTP %s)",
+                        item["title"], item["uid"], deleted.status_code,
+                    )
+        except Exception as e:
+            logger.warning(f"Could not check for the legacy dashboard: {e}")
+
     def create_dashboard(self) -> bool:
-        """Create main monitoring dashboard"""
+        """Create main monitoring dashboard (legacy; dashboards are now provisioned)"""
         logger.info("Creating FLEAD monitoring dashboard...")
         
         if not self.datasource_uid:
@@ -449,18 +472,21 @@ class GrafanaConfigurator:
         # Create datasource
         if not self.create_datasource():
             return False
-        
-        # Create dashboard
-        if not self.create_dashboard():
-            return False
-        
+
+        # Dashboards are provisioned from grafana/dashboards/*.json (see
+        # grafana/provisioning/dashboards/default.yaml). create_dashboard() is
+        # no longer called: it added a ninth, API-created dashboard whose
+        # "Latest Global Accuracy" panels showed training accuracy. That
+        # dashboard persists in the grafana_data volume, so remove it.
+        self.remove_legacy_dashboard()
+
         logger.info("\n" + "=" * 70)
         logger.info("✓ GRAFANA SETUP COMPLETE")
         logger.info("=" * 70)
         logger.info(f"\nAccess Grafana at: {GRAFANA_URL}")
         logger.info(f"Username: {GRAFANA_USER}")
         logger.info(f"Password: {GRAFANA_PASSWORD}")
-        logger.info("\nDashboard: FLEAD - Federated Learning Monitoring")
+        logger.info("\nDashboards: provisioned from grafana/dashboards (folder 'FLEAD')")
         
         return True
 

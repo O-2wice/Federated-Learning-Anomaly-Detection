@@ -25,17 +25,23 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Flink JobManager metrics
+  # Flink metrics via the built-in Prometheus reporter (port 9249, enabled in
+  # docker-compose FLINK_PROPERTIES). The REST port 8081 has no /metrics
+  # endpoint, which is why this target was always down.
   - job_name: 'flink-jobmanager'
     static_configs:
-      - targets: ['flink-jobmanager:8081']
-    metrics_path: /metrics
+      - targets: ['flink-jobmanager:9249']
+    scrape_interval: 10s
+
+  - job_name: 'flink-taskmanager'
+    static_configs:
+      - targets: ['flink-taskmanager:9249']
     scrape_interval: 10s
 
   # Spark Master metrics (via REST API scraping)
   - job_name: 'spark-master'
     static_configs:
-      - targets: ['spark-master:8080']
+      - targets: ['spark-master:8086']
     metrics_path: /metrics/master/prometheus
     scrape_interval: 15s
     # Fallback - Spark may not expose Prometheus metrics by default
@@ -47,7 +53,9 @@ scrape_configs:
   # Custom FLEAD Pipeline Metrics (from monitoring-dashboard)
   - job_name: 'flead-pipeline'
     static_configs:
-      - targets: ['monitoring-dashboard:5001']
+      # Container port (5000). 5001 is only the host-side mapping, so the
+      # old target was never reachable from inside the Docker network.
+      - targets: ['monitoring-dashboard:5000']
     metrics_path: /metrics
     scrape_interval: 10s
 

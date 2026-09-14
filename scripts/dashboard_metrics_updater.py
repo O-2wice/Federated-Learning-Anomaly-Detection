@@ -2,24 +2,27 @@
 """
 Dashboard metrics updater for FLEAD
 
-Periodically aggregates simple KPIs into dashboard_metrics so that:
-- pipeline_monitor.py stops showing zeros
-- Grafana can plot longitudinal KPIs
+Every 15 s, computes the fleet-wide KPIs that scan the large tables (row
+totals, device counts, anomaly rate) and writes one dashboard_metrics row per
+KPI:
 
-Reads from:
-  - iot_data
-  - local_models
-  - federated_models
+- Grafana derives fleet totals and rates from these snapshots.
+- The monitoring dashboard and its Prometheus exporter read the latest
+  snapshot instead of re-running the scans on every refresh or scrape.
 
-Writes into:
-  - dashboard_metrics(updated_at, total_iot, total_local_models, total_federated_models)
+Reads: iot_data, local_models, federated_models, anomalies
+Writes: dashboard_metrics(metric_name, metric_value, metric_unit, timestamp)
 """
 
 import logging
+import os
+import sys
 import time
-from datetime import datetime
 
 import psycopg2
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_loader import get_db_config  # noqa: E402
 
 # ---------------------------------------------------------------------
 # Logging
@@ -31,13 +34,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
-# DB config – matches your other services
+# DB config – shared config (environment variables from docker-compose)
 # ---------------------------------------------------------------------
-DB_HOST = "timescaledb"
-DB_PORT = 5432
-DB_NAME = "flead"
-DB_USER = "flead"
-DB_PASSWORD = "password"
+_db = get_db_config()
+DB_HOST = _db["host"]
+DB_PORT = _db["port"]
+DB_NAME = _db["database"]
+DB_USER = _db["user"]
+DB_PASSWORD = _db["password"]
 
 INTERVAL_SECONDS = 15  # how often to write a new metrics row (optimized from 30s)
 
@@ -113,82 +117,66 @@ class DashboardMetricsUpdater:
             self.conn.rollback()
             return True  # Assume it exists
 
+    # (metric_name, unit, SQL returning one number)
+    METRICS = [
+        ("total_iot_count", "count", "SELECT COUNT(*) FROM iot_data"),
+        ("total_local_models_count", "count", "SELECT COUNT(*) FROM local_models"),
+        ("total_federated_models_count", "count", "SELECT COUNT(*) FROM federated_models"),
+        ("total_anomalies_count", "count", "SELECT COUNT(*) FROM anomalies"),
+        ("devices_with_models", "count", "SELECT COUNT(DISTINCT device_id) FROM local_models"),
+        ("active_devices_5m", "count",
+         "SELECT COUNT(DISTINCT device_id) FROM iot_data WHERE ts > NOW() - INTERVAL '5 minutes'"),
+        # Devices with local models but no readings in the last hour: one
+        # (device_id, ts) index probe per device
+        ("stale_devices_count", "count",
+         "SELECT COUNT(*) FROM (SELECT DISTINCT device_id FROM local_models) m "
+         "WHERE NOT EXISTS (SELECT 1 FROM iot_data i "
+         "WHERE i.device_id = m.device_id AND i.ts > NOW() - INTERVAL '1 hour')"),
+        ("anomaly_rate_1h", "ratio",
+         "SELECT (SELECT COUNT(*) FROM anomalies WHERE ts > NOW() - INTERVAL '1 hour')::float "
+         "/ NULLIF((SELECT COUNT(*) FROM iot_data WHERE ts > NOW() - INTERVAL '1 hour'), 0)"),
+        ("anomaly_attack_share_1h", "ratio",
+         "SELECT AVG(label)::float FROM anomalies "
+         "WHERE ts > NOW() - INTERVAL '1 hour' AND label IS NOT NULL"),
+    ]
+
     def compute_kpis(self):
-        """Return (total_iot, total_local, total_federated, total_anomalies)."""
+        """Return {metric_name: (value, unit)}; a KPI whose query fails or has no value is left out."""
+        values = {}
+        for name, unit, sql in self.METRICS:
+            try:
+                with self.conn.cursor() as cur:
+                    cur.execute(sql)
+                    row = cur.fetchone()
+                if row and row[0] is not None:
+                    values[name] = (float(row[0]), unit)
+            except Exception as e:
+                logger.warning("KPI %s failed: %s", name, e)
+                self.conn.rollback()
+        return values
+
+    def insert_metrics_row(self, values):
+        """Insert one dashboard_metrics row per KPI, stamped with the database clock."""
         try:
-            cur = self.conn.cursor()
-
-            # raw IoT rows
-            try:
-                cur.execute("SELECT COUNT(*) FROM iot_data;")
-                total_iot = cur.fetchone()[0]
-            except Exception:
-                total_iot = 0
-
-            # local model rows
-            try:
-                cur.execute("SELECT COUNT(*) FROM local_models;")
-                total_local = cur.fetchone()[0]
-            except Exception:
-                total_local = 0
-
-            # federated model rows
-            try:
-                cur.execute("SELECT COUNT(*) FROM federated_models;")
-                total_fed = cur.fetchone()[0]
-            except Exception:
-                total_fed = 0
-
-            # anomalies count
-            try:
-                cur.execute("SELECT COUNT(*) FROM anomalies;")
-                total_anomalies = cur.fetchone()[0]
-            except Exception:
-                total_anomalies = 0
-
-            cur.close()
-            return total_iot, total_local, total_fed, total_anomalies
-
-        except Exception as e:
-            logger.error("✗ Failed to compute KPIs: %s", e)
-            return 0, 0, 0, 0
-
-    def insert_metrics_row(self, total_iot, total_local, total_fed, total_anomalies):
-        """Insert rows into dashboard_metrics (one per KPI)."""
-        try:
-            cur = self.conn.cursor()
-            now = datetime.utcnow()
-            
-            # We insert 4 rows, one for each metric
-            metrics = [
-                ("total_iot_count", float(total_iot), "count"),
-                ("total_local_models_count", float(total_local), "count"),
-                ("total_federated_models_count", float(total_fed), "count"),
-                ("total_anomalies_count", float(total_anomalies), "count"),
-            ]
-
-            for name, val, unit in metrics:
-                cur.execute(
-                    """
-                    INSERT INTO dashboard_metrics
-                        (metric_name, metric_value, metric_unit, timestamp, updated_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (metric_name, timestamp) DO NOTHING;
-                    """,
-                    (name, val, unit, now, now),
-                )
-
+            with self.conn.cursor() as cur:
+                for name, (value, unit) in values.items():
+                    cur.execute(
+                        """
+                        INSERT INTO dashboard_metrics
+                            (metric_name, metric_value, metric_unit, timestamp, updated_at)
+                        VALUES (%s, %s, %s, NOW(), NOW())
+                        ON CONFLICT (metric_name, timestamp) DO NOTHING;
+                        """,
+                        (name, value, unit),
+                    )
             self.conn.commit()
-            cur.close()
             logger.info(
-                "✓ Inserted dashboard_metrics rows: iot=%d, local=%d, fed=%d, anomalies=%d",
-                total_iot,
-                total_local,
-                total_fed,
-                total_anomalies,
+                "✓ Inserted %d dashboard_metrics rows: %s",
+                len(values),
+                ", ".join(f"{name}={value:g}" for name, (value, _) in values.items()),
             )
         except Exception as e:
-            logger.error("✗ Failed to insert dashboard_metrics row: %s", e)
+            logger.error("✗ Failed to insert dashboard_metrics rows: %s", e)
             self.conn.rollback()
 
     def run(self):
@@ -204,8 +192,7 @@ class DashboardMetricsUpdater:
 
         try:
             while True:
-                total_iot, total_local, total_fed, total_anomalies = self.compute_kpis()
-                self.insert_metrics_row(total_iot, total_local, total_fed, total_anomalies)
+                self.insert_metrics_row(self.compute_kpis())
                 time.sleep(INTERVAL_SECONDS)
         except KeyboardInterrupt:
             logger.info("Stopping dashboard_metrics updater (Ctrl+C)")

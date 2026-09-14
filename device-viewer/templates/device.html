@@ -1,98 +1,109 @@
-{% extends 'base.html' %} {% block content %}
-<div class="container mt-5">
-    <!-- Header & Navigation -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <a
-                href="{{ url_for('index') }}"
-                class="text-decoration-none text-muted small"
-            >
-                <i class="fas fa-arrow-left"></i> Back to Devices
-            </a>
-            <h1 class="display-6 fw-bold mt-2">
-                {{ filename | replace('.csv', '') }}
-            </h1>
+{% extends 'base.html' %}
+{% block title %}{{ device_id }}{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <a class="back" href="{{ url_for('index') }}">← All devices</a>
+        <h1>{{ device_id }}</h1>
+        <p class="muted">{{ summary.rows }} readings · {{ summary.features }} standardized features ·
+            {{ summary.attack_share | pct }} labelled as attacks</p>
+    </div>
+    <div class="head-actions">
+        {% if prev_file %}<a class="button ghost" href="{{ url_for('device', filename=prev_file) }}">‹ Previous</a>{% endif %}
+        {% if next_file %}<a class="button ghost" href="{{ url_for('device', filename=next_file) }}">Next ›</a>{% endif %}
+        <a class="button" href="{{ grafana_url }}/d/flead-device?var-device={{ device_id }}" target="_blank" rel="noopener">Open in Grafana</a>
+    </div>
+</section>
+
+<section class="grid-2">
+    <div class="card">
+        <h2>Streamed and held out</h2>
+        <p class="muted">The producer streams the first {{ stream_rows }} readings; Spark evaluates the global model on the rest.</p>
+        <div class="split">
+            <div class="split-bar" role="img" aria-label="{{ summary.streamed_rows }} streamed, {{ summary.heldout_rows }} held out">
+                <span style="flex: {{ summary.streamed_rows }}">Streamed {{ summary.streamed_rows }}</span>
+                <span class="held" style="flex: {{ summary.heldout_rows or 0.0001 }}">Held out {{ summary.heldout_rows }}</span>
+            </div>
+            <dl class="inline">
+                <div><dt>Attacks in streamed part</dt><dd>{{ summary.streamed_attack_share | pct }}</dd></div>
+                <div><dt>Attacks in held-out part</dt><dd>{{ summary.heldout_attack_share | pct }}</dd></div>
+                <div><dt>Synthetic timestamps</dt><dd>{{ summary.first_timestamp }} → {{ summary.last_timestamp }}</dd></div>
+            </dl>
         </div>
     </div>
 
-    <!-- Stats Cards -->
-    {% if header %}
-    <div class="row g-3 mb-4">
-        <div class="col-md-3">
-            <div class="fl-stat-card-large">
-                <div class="fl-stat-icon"><i class="fas fa-list"></i></div>
-                <div class="fl-stat-number">{{ stats.rows }}</div>
-                <div class="fl-stat-label">Total Rows</div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="fl-stat-card-large">
-                <div class="fl-stat-icon"><i class="fas fa-columns"></i></div>
-                <div class="fl-stat-number">{{ stats.cols }}</div>
-                <div class="fl-stat-label">Columns</div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="fl-stat-card-large">
-                <div class="fl-stat-icon"><i class="fas fa-hdd"></i></div>
-                <div class="fl-stat-number">{{ stats.size_kb }}</div>
-                <div class="fl-stat-label">Size (KB)</div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="fl-stat-card-large">
-                <div class="fl-stat-icon"><i class="fas fa-clock"></i></div>
-                <div class="fl-stat-number small">{{ stats.modified }}</div>
-                <div class="fl-stat-label">Last Modified</div>
-            </div>
-        </div>
+    <div class="card">
+        <h2>In the pipeline</h2>
+        {% if detail is none %}
+        <p class="notice">TimescaleDB is not reachable, so pipeline results are unavailable.</p>
+        {% else %}
+        <dl class="facts">
+            <div><dt>Readings stored</dt><dd>{{ detail.readings | thousands }}</dd>
+                <small>last {{ detail.last_reading | when }}</small></div>
+            <div><dt>Anomalies flagged (RRCF)</dt><dd>{{ detail.anomalies | thousands }}</dd>
+                <small>{% if detail.anomalies %}{{ detail.anomaly_attack_share | pct }} real attacks · {{ detail.critical }} critical{% else %}none yet{% endif %}</small></div>
+            <div><dt>Local models trained</dt><dd>{{ detail.local_models | thousands }}</dd>
+                <small>{% if detail.latest_model %}latest v{{ detail.latest_model[0] }} from global v{{ detail.latest_model[1] }}, training accuracy {{ detail.latest_model[2] | pct }}{% else %}none yet{% endif %}</small></div>
+            <div><dt>Fleet z-score windows</dt><dd>{{ detail.zscore_windows | thousands }}</dd>
+                <small>{{ detail.zscore_flags }} out of line with the fleet</small></div>
+        </dl>
+        {% endif %}
     </div>
-    {% endif %}
+</section>
 
-    <!-- Data Preview -->
-    {% if not header %}
-    <div class="alert alert-info alert-lg border-0 shadow-sm">
-        <i class="fas fa-info-circle fa-lg me-2"></i>
-        <strong>Empty Dataset</strong> — This CSV file appears to be empty.
+{% if detail %}
+<section class="grid-2">
+    <div class="card">
+        <h2>Latest held-out evaluation</h2>
+        {% if detail.evaluation %}
+        {% set ev = detail.evaluation %}
+        <p class="big">{{ ev[1] | pct }} <span class="muted">accuracy of global v{{ ev[0] }}</span></p>
+        <p class="muted">On {{ ev[2] }} held-out readings of this device (TP {{ ev[3] }}, FP {{ ev[4] }}, FN {{ ev[5] }}, TN {{ ev[6] }}).
+            A single device contributes only a small sample, so fleet-wide figures on the monitor are the reliable measure.</p>
+        {% else %}
+        <p class="muted">No evaluation of this device yet. Spark scores every new global model, starting a few minutes after the first federated round.</p>
+        {% endif %}
     </div>
-    {% else %}
-    <div class="fl-data-preview">
-        <div class="fl-data-header">
-            <h5 class="mb-0">
-                <i class="fas fa-table"></i> Data Preview
-                <span class="badge bg-secondary ms-2">First 100 rows</span>
-            </h5>
-        </div>
-        <div class="fl-data-table-wrapper">
-            <table class="table table-sm fl-data-table">
-                <thead>
-                    <tr>
-                        {% for h in header %}
-                        <th>{{ h }}</th>
-                        {% endfor %}
-                    </tr>
-                </thead>
+
+    <div class="card">
+        <h2>Recent anomalies</h2>
+        {% if detail.recent_anomalies %}
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Reading time</th><th class="num">RRCF score</th><th>Severity</th><th>Label</th></tr></thead>
                 <tbody>
-                    {% for row in rows %}
-                    <tr>
-                        {% for cell in row %}
-                        <td class="fl-cell">{{ cell }}</td>
-                        {% endfor %}
-                    </tr>
-                    {% endfor %}
+                {% for ts, score, severity, label in detail.recent_anomalies %}
+                <tr>
+                    <td>{{ ts | when }}</td>
+                    <td class="num">{{ '%.2f' % score }}</td>
+                    <td><span class="pill sev-{{ severity }}">{{ severity }}</span></td>
+                    <td>{% if label == 1 %}<span class="pill attack">attack</span>{% elif label == 0 %}benign{% else %}–{% endif %}</td>
+                </tr>
+                {% endfor %}
                 </tbody>
             </table>
         </div>
-        {% if rows|length >= 100 %}
-        <div class="fl-data-footer">
-            <p class="small text-muted mb-0">
-                <i class="fas fa-info-circle"></i>
-                Showing first 100 rows of {{ stats.rows }} total rows.
-                <a href="#" class="ms-2">Download full CSV →</a>
-            </p>
-        </div>
+        {% else %}
+        <p class="muted">No anomalies flagged for this device yet.</p>
         {% endif %}
     </div>
-    {% endif %}
-</div>
+</section>
+{% endif %}
+
+<section class="card">
+    <h2>First {{ rows | length }} readings</h2>
+    <p class="muted">Feature values are standardized (zero mean, unit variance across the dataset); label 1 marks an attack.</p>
+    <div class="table-wrap data">
+        <table>
+            <thead><tr>{% for h in header %}<th{% if loop.index > 2 %} class="num"{% endif %}>{{ h }}</th>{% endfor %}</tr></thead>
+            <tbody>
+            {% for row in rows %}
+            <tr{% if row[1] == '1' %} class="attack-row"{% endif %}>
+                {% for cell in row %}<td{% if loop.index > 2 %} class="num"{% endif %}>{{ cell }}</td>{% endfor %}
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 {% endblock %}

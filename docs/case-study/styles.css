@@ -1,0 +1,357 @@
+/* FLEAD case study: framed, polished layout on top of Quarto's cosmo theme */
+
+:root {
+  --navy: #0f172a;
+  --slate: #475569;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --soft: #f8fafc;
+  --sky: #0ea5e9;
+  --teal: #14b8a6;
+  --purple: #8b5cf6;
+  --orange: #f97316;
+  --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+}
+
+main.content {
+  font-size: 1.04rem;
+}
+
+main h2 {
+  font-weight: 800;
+  color: var(--navy);
+  border-bottom: none;
+  margin-top: 0.3rem;
+}
+
+/* Small label above each section heading */
+.kicker {
+  display: inline-block;
+  margin-top: 2.8rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sky);
+}
+
+.badges img {
+  margin: 0 0.2rem 0.3rem 0;
+}
+
+.pitch {
+  margin: 1.2rem 0 1.4rem;
+  padding: 1.3rem 1.5rem;
+  background: linear-gradient(135deg, #eff6ff 0%, #f0fdfa 100%);
+  border: 1px solid #dbeafe;
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+.pitch p:last-child {
+  margin-bottom: 0;
+}
+
+/* Headline numbers */
+.stats {
+  margin: 1.4rem 0 1.6rem;
+}
+
+.stats > div {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--sky);
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  box-shadow: var(--shadow);
+}
+
+.stats > div:nth-child(2) { border-top-color: var(--teal); }
+.stats > div:nth-child(3) { border-top-color: var(--orange); }
+.stats > div:nth-child(4) { border-top-color: var(--purple); }
+
+.stat-value {
+  display: block;
+  font-size: 1.7rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--navy);
+}
+
+.stat-label {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--slate);
+}
+
+/* Frames around the recording, diagram and charts */
+.frame {
+  margin: 1.2rem 0 1.6rem;
+  padding: 0.9rem;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+.frame video,
+.frame img {
+  display: block;
+  width: 100%;
+  border-radius: 12px;
+}
+
+.frame .quarto-figure,
+.frame figure {
+  margin: 0;
+}
+
+.frame-dark {
+  padding: 0.5rem;
+  background: #1e293b;
+  border-color: #1e293b;
+}
+
+.frame-caption {
+  display: block;
+  margin: 0.7rem 0.2rem 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.panel-tabset img {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.figure-caption,
+figcaption {
+  color: var(--muted) !important;
+  font-size: 0.88rem;
+}
+
+/* Pipeline step cards */
+.steps {
+  margin: 1.4rem 0 0.6rem;
+}
+
+.step {
+  height: 100%;
+  padding: 1.1rem 1.15rem 0.6rem;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.step p {
+  margin-bottom: 0.5rem;
+  font-size: 0.93rem;
+  color: var(--slate);
+}
+
+.step-head p {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.6rem;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--navy);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.step-logo {
+  width: 26px;
+  height: 26px;
+}
+
+.step-title {
+  font-weight: 800;
+  font-size: 1.06rem;
+  color: var(--navy);
+}
+
+/* Stream and batch panels */
+.flow > div {
+  height: 100%;
+  padding: 1.2rem 1.4rem 0.5rem;
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.flow .stream {
+  background: linear-gradient(160deg, #ecfeff 0%, #ffffff 60%);
+  border: 1px solid #a5f3fc;
+}
+
+.flow .batch {
+  background: linear-gradient(160deg, #f5f3ff 0%, #ffffff 60%);
+  border: 1px solid #ddd6fe;
+}
+
+.flow-title {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.flow-sub {
+  display: block;
+  margin-bottom: 0.7rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.flow li {
+  margin-bottom: 0.45rem;
+  font-size: 0.95rem;
+  color: var(--slate);
+}
+
+/* Tool cards */
+.tools {
+  margin: 1.4rem 0 0.6rem;
+}
+
+.tool {
+  height: 100%;
+  padding: 1.1rem 1.15rem 0.5rem;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.tool p {
+  margin-bottom: 0.55rem;
+  font-size: 0.92rem;
+  color: var(--slate);
+}
+
+.tool-head p {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.65rem;
+}
+
+.tool-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.tool-name {
+  font-weight: 800;
+  font-size: 1.08rem;
+  color: var(--navy);
+}
+
+.chosen {
+  display: block;
+  padding: 0.55rem 0.7rem;
+  background: var(--soft);
+  border-radius: 10px;
+  font-size: 0.88rem;
+  color: var(--slate);
+}
+
+/* Design decision cards */
+.decision {
+  margin: 1.2rem 0;
+  padding: 1.2rem 1.4rem 0.6rem;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--sky);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.decision.purple { border-left-color: var(--purple); }
+.decision.teal { border-left-color: var(--teal); }
+.decision.orange { border-left-color: var(--orange); }
+
+.decision h3 {
+  margin-top: 0.2rem;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.decision-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.decision .math.display {
+  display: block;
+  overflow-x: auto;
+}
+
+/* Tables */
+main table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+main table thead th {
+  background: var(--soft);
+  color: var(--navy);
+  font-weight: 700;
+  border-bottom: 1px solid var(--line) !important;
+}
+
+main table td,
+main table th {
+  padding: 0.55rem 0.8rem !important;
+}
+
+main table tbody tr:nth-child(even) {
+  background: #fbfdff;
+}
+
+/* Tabbed screenshots */
+.panel-tabset {
+  padding: 0.6rem 1rem 1rem;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+/* Scope and next steps */
+.duo > div {
+  padding: 1rem 1.2rem 0.4rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+div.sourceCode {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.credits {
+  font-size: 0.9rem;
+  color: var(--muted);
+}

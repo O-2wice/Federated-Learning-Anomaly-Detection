@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": "-- Grafana --",
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -11,627 +14,1645 @@
         "type": "dashboard"
       },
       {
-        "datasource": "FLEAD-TimescaleDB",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "flead-timescaledb"
+        },
         "enable": true,
         "hide": false,
-        "iconColor": "#00D4FF",
-        "name": "Aggregation Rounds",
+        "iconColor": "#f59e0b",
+        "name": "Rollbacks",
         "target": {
+          "refId": "Anno",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT created_at AS time, 'Round ' || aggregation_round || ': ' || num_devices || ' devices → ' || ROUND(accuracy*100,1) || '% acc' AS text FROM federated_models ORDER BY created_at DESC LIMIT 30;",
-          "refId": "A"
+          "rawSql": "SELECT created_at AS time, 'Rollback: v' || global_version || ' republishes the best held-out version' AS text FROM federated_models WHERE num_devices = 0 AND $__timeFilter(created_at)"
         }
       }
     ]
   },
-  "description": "Deep dive into Federated Learning model training, aggregation, and performance",
+  "description": "Global model quality on held-out readings, differential privacy and the federated rounds behind it.",
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 2,
+  "graphTooltip": 1,
   "id": null,
   "links": [
     {
-      "asDropdown": true,
+      "asDropdown": false,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
-      "tags": ["flead"],
-      "title": "FLEAD Dashboards",
-      "type": "dashboards"
+      "tags": [
+        "flead"
+      ],
+      "targetBlank": false,
+      "title": "FLEAD dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
     }
   ],
-  "liveNow": true,
+  "liveNow": false,
   "panels": [
     {
-      "id": 100,
-      "type": "row",
-      "title": "🧠 Global Model Status",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "collapsed": false
-    },
-    {
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "options": {
+        "mode": "markdown",
+        "content": "### Federated learning and privacy\nDevices train logistic regressions locally; the aggregator combines their updates with buffered FedAvg, clipping and Gaussian noise (DP-FedAvg). Amber markers are automatic rollbacks.  \n**[Federated learning & privacy](/d/flead-fl-lab)** · **[Anomalies](/d/flead-anomaly)** · **[Devices](/d/flead-device)** · **[Operations](/d/flead-ops)** · [Live monitor ↗](http://localhost:5001) · [Device viewer ↗](http://localhost:8082)"
+      },
       "id": 1,
-      "type": "stat",
-      "title": "🔢 Current Version",
-      "description": "Latest global model version",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT COALESCE(MAX(created_at), now()) AS time, COALESCE(MAX(global_version), 0) AS value FROM federated_models;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#00D4FF", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value_and_name",
-        "text": { "valueSize": 48 }
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
       }
     },
     {
+      "type": "row",
+      "title": "Global model",
+      "collapsed": false,
+      "panels": [],
       "id": 2,
-      "type": "gauge",
-      "title": "🎯 Current Accuracy",
-      "description": "Latest global model accuracy",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, COALESCE(accuracy * 100, 0) AS value FROM federated_models ORDER BY created_at DESC LIMIT 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 60 },
-              { "color": "#FFDC00", "value": 75 },
-              { "color": "#2ECC40", "value": 85 },
-              { "color": "#00D4FF", "value": 95 }
-            ]
-          }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showThresholdLabels": true,
-        "showThresholdMarkers": true
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
       }
     },
     {
-      "id": 3,
       "type": "stat",
-      "title": "🔄 Aggregation Rounds",
-      "description": "Total FL aggregation rounds completed",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "title": "Global version",
+      "description": "Latest global model version.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
       "targets": [
         {
           "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT COALESCE(MAX(created_at), now()) AS time, COALESCE(MAX(aggregation_round), 0) AS value FROM federated_models;"
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT global_version AS value FROM federated_models ORDER BY created_at DESC LIMIT 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#9D70F9", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "📱 Participating Devices",
-      "description": "Devices in latest aggregation round",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, COALESCE(num_devices, 0) AS value FROM federated_models ORDER BY created_at DESC LIMIT 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 5 },
-              { "color": "#2ECC40", "value": 10 }
-            ]
-          }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 5,
-      "type": "stat",
-      "title": "📊 Local Models",
-      "description": "Total local models trained",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT COALESCE(MAX(created_at), now()) AS time, COUNT(*) AS value FROM local_models;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "#4ECDC4", "value": null }] }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "area",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 6,
-      "type": "stat",
-      "title": "📈 Accuracy Δ",
-      "description": "Improvement from first to latest model",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "WITH bounds AS (\n  SELECT\n    (SELECT accuracy FROM federated_models ORDER BY created_at LIMIT 1) AS first_acc,\n    (SELECT accuracy FROM federated_models ORDER BY created_at DESC LIMIT 1) AS last_acc,\n    (SELECT created_at FROM federated_models ORDER BY created_at DESC LIMIT 1) AS ts\n)\nSELECT COALESCE(ts, now()) AS time, COALESCE(ROUND(((last_acc - first_acc) * 100)::numeric, 2), 0) AS value FROM bounds;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "decimals": 2,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FFDC00", "value": 0 },
-              { "color": "#2ECC40", "value": 5 },
-              { "color": "#00D4FF", "value": 15 }
-            ]
-          }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "center"
-      }
-    },
-    {
-      "id": 101,
-      "type": "row",
-      "title": "📈 Learning Curves",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
-      "collapsed": false
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "🎯 Global Model Accuracy Evolution",
-      "description": "Track global model performance over aggregation rounds",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 7 },
-      "targets": [
-        {
-          "refId": "Accuracy",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, accuracy * 100 AS \"Accuracy %\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY created_at;"
-        },
-        {
-          "refId": "Baseline",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, 90 AS \"Target: 90%\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY created_at LIMIT 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 3,
-            "fillOpacity": 30,
-            "gradientMode": "opacity",
-            "showPoints": "always",
-            "pointSize": 10
-          }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Accuracy %" },
-            "properties": [
-              { "id": "color", "value": { "fixedColor": "#00D4FF", "mode": "fixed" } }
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
             ]
           },
-          {
-            "matcher": { "id": "byName", "options": "Target: 90%" },
-            "properties": [
-              { "id": "color", "value": { "fixedColor": "#FF6B6B", "mode": "fixed" } },
-              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
-              { "id": "custom.fillOpacity", "value": 0 },
-              { "id": "custom.showPoints", "value": "never" }
-            ]
-          }
-        ]
+          "mappings": []
+        },
+        "overrides": []
       },
       "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["min", "max", "last"] },
-        "tooltip": { "mode": "multi" }
-      }
-    },
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "📱 Devices Per Round",
-      "description": "Number of participating devices in each FL round",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 7 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT created_at AS time, num_devices AS \"Participating Devices\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY created_at;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "bars",
-            "lineWidth": 0,
-            "fillOpacity": 80,
-            "gradientMode": "hue",
-            "showPoints": "never"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Participating Devices" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "#9D70F9", "mode": "fixed" } }]
-          }
-        ]
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["sum", "mean", "max"] },
-        "tooltip": { "mode": "single" }
-      }
-    },
-    {
-      "id": 102,
-      "type": "row",
-      "title": "🏠 Local Model Performance",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
-      "collapsed": false
-    },
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "📊 Local Model Accuracy Distribution Over Time",
-      "description": "How individual device model accuracies evolve - shows min/avg/max range",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 17 },
-      "targets": [
-        {
-          "refId": "Max",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, MAX(accuracy) * 100 AS \"Max Accuracy\" FROM local_models WHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' ) GROUP BY 1 ORDER BY 1;"
-        },
-        {
-          "refId": "Avg",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, AVG(accuracy) * 100 AS \"Avg Accuracy\" FROM local_models WHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' ) GROUP BY 1 ORDER BY 1;"
-        },
-        {
-          "refId": "Min",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, MIN(accuracy) * 100 AS \"Min Accuracy\" FROM local_models WHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' ) GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 40,
-          "max": 100,
-          "decimals": 1,
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "showPoints": "always",
-            "pointSize": 6,
-            "spanNulls": true
-          }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Max Accuracy" }, "properties": [{ "id": "color", "value": { "fixedColor": "#2ECC40", "mode": "fixed" } }, { "id": "custom.lineWidth", "value": 2 }, { "id": "custom.fillOpacity", "value": 20 }, { "id": "custom.fillBelowTo", "value": "Min Accuracy" }] },
-          { "matcher": { "id": "byName", "options": "Avg Accuracy" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00D4FF", "mode": "fixed" } }, { "id": "custom.lineWidth", "value": 3 }, { "id": "custom.showPoints", "value": "always" }, { "id": "custom.pointSize", "value": 8 }] },
-          { "matcher": { "id": "byName", "options": "Min Accuracy" }, "properties": [{ "id": "color", "value": { "fixedColor": "#FF6B6B", "mode": "fixed" } }, { "id": "custom.lineWidth", "value": 2 }] }
-        ]
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["min", "mean", "max", "last"], "width": 300 },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      }
-    },
-    {
-      "id": 21,
-      "type": "bargauge",
-      "title": "🏆 Top Device Accuracies",
-      "description": "Best performing local models",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 27 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT device_id, ROUND(MAX(accuracy)::numeric * 100, 1) AS accuracy FROM local_models WHERE $__timeFilter(created_at) GROUP BY device_id ORDER BY accuracy DESC LIMIT 10;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "#FF4136", "value": null },
-              { "color": "#FF851B", "value": 60 },
-              { "color": "#FFDC00", "value": 75 },
-              { "color": "#2ECC40", "value": 85 },
-              { "color": "#00D4FF", "value": 95 }
-            ]
-          }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true,
-        "valueMode": "color"
-      }
-    },
-    {
-      "id": 22,
-      "type": "timeseries",
-      "title": "📈 Local Model Training Rate",
-      "description": "Rate of local model creation over time",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 27 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('5 minutes', created_at) AS time, COUNT(*) AS \"Models Trained\" FROM local_models WHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' ) GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "bars",
-            "lineWidth": 0,
-            "fillOpacity": 80,
-            "gradientMode": "hue",
-            "showPoints": "never"
-          }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Models Trained" }, "properties": [{ "id": "color", "value": { "fixedColor": "#4ECDC4", "mode": "fixed" } }] }
-        ]
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
-      }
-    },
-    {
-      "id": 23,
-      "type": "timeseries",
-      "title": "📊 Samples Processed Per Model",
-      "description": "Data samples used in local training",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 27 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT time_bucket('5 minutes', created_at) AS time, AVG(samples_processed) AS \"Avg Samples\", MAX(samples_processed) AS \"Max Samples\" FROM local_models WHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' ) GROUP BY 1 ORDER BY 1;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "showPoints": "auto"
-          }
-        }
-      },
-      "options": {
-        "legend": { "showLegend": true, "displayMode": "table", "placement": "right", "calcs": ["mean", "sum"] },
-        "tooltip": { "mode": "multi" }
-      }
-    },
-    {
-      "id": 103,
-      "type": "row",
-      "title": "📋 Model History",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
-      "collapsed": false
-    },
-    {
-      "id": 30,
-      "type": "table",
-      "title": "🧠 Federated Model History",
-      "description": "Complete history of global model versions",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 35 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT\n  created_at AS \"Created\",\n  global_version AS \"Version\",\n  aggregation_round AS \"Round\",\n  num_devices AS \"Devices\",\n  ROUND((accuracy * 100)::numeric, 2) AS \"Accuracy %\",\n  CASE\n    WHEN accuracy >= 0.95 THEN '🌟 Excellent'\n    WHEN accuracy >= 0.85 THEN '✅ Good'\n    WHEN accuracy >= 0.70 THEN '⚠️ Fair'\n    ELSE '❌ Poor'\n  END AS \"Rating\"\nFROM federated_models\nWHERE $__timeFilter(created_at)\nORDER BY created_at DESC\nLIMIT 50;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Created" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-          { "matcher": { "id": "byName", "options": "Accuracy %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient", "valueDisplayMode": "text" } }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } }, { "id": "min", "value": 0 }, { "id": "max", "value": 100 }] },
-          { "matcher": { "id": "byName", "options": "Rating" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }] }
-        ]
-      },
-      "options": { "showHeader": true, "cellHeight": "sm", "footer": { "show": true, "reducer": ["mean"], "fields": ["Accuracy %"] } }
-    },
-    {
-      "id": 31,
-      "type": "table",
-      "title": "🏠 Local Model Updates",
-      "description": "Recent local model training events",
-      "datasource": "FLEAD-TimescaleDB",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 35 },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT\n  created_at AS \"Created\",\n  device_id AS \"Device\",\n  model_version AS \"Local Ver\",\n  global_version AS \"Global Ver\",\n  ROUND((accuracy * 100)::numeric, 2) AS \"Accuracy %\",\n  samples_processed AS \"Samples\"\nFROM local_models\nWHERE $__timeFilter(created_at) AND ( '$device' = 'ALL' OR device_id = '$device' )\nORDER BY created_at DESC\nLIMIT 100;"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Created" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-          { "matcher": { "id": "byName", "options": "Accuracy %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "basic", "valueDisplayMode": "text" } }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } }, { "id": "min", "value": 0 }, { "id": "max", "value": 100 }] }
-        ]
-      },
-      "options": { "showHeader": true, "cellHeight": "sm" }
-    },
-    {
-      "id": 104,
-      "type": "row",
-      "title": "📡 Kafka Model Updates Stream",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
-      "collapsed": true,
-      "panels": [
-        {
-          "id": 40,
-          "type": "table",
-          "title": "📡 Real-time Model Update Stream",
-          "datasource": "FLEAD-TimescaleDB",
-          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 46 },
-          "targets": [
-            {
-              "refId": "A",
-              "format": "table",
-              "rawSql": "SELECT\n  ts AS \"Time\",\n  device_id AS \"Device\",\n  model_version AS \"Version\",\n  ROUND(accuracy::numeric, 4) AS \"Accuracy\",\n  ROUND(loss::numeric, 4) AS \"Loss\",\n  ROUND(mean::numeric, 2) AS \"Mean\",\n  ROUND(std::numeric, 2) AS \"Std Dev\"\nFROM local_model_updates\nWHERE $__timeFilter(ts) AND ( '$device' = 'ALL' OR device_id = '$device' )\nORDER BY ts DESC\nLIMIT 100;"
-            }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
           ],
-          "fieldConfig": {
-            "defaults": { "custom": { "align": "auto", "filterable": true } },
-            "overrides": [
-              { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "unit", "value": "dateTimeAsLocal" }] },
-              { "matcher": { "id": "byName", "options": "Loss" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "#2ECC40", "value": null }, { "color": "#FFDC00", "value": 0.3 }, { "color": "#FF4136", "value": 0.5 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Held-out accuracy",
+      "description": "Latest held-out accuracy.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT model_accuracy AS value FROM model_evaluations WHERE device_id = 'ALL' ORDER BY evaluation_timestamp DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 0.75
+              },
+              {
+                "color": "#22c55e",
+                "value": 0.8
+              }
             ]
           },
-          "options": { "showHeader": true, "cellHeight": "sm" }
+          "mappings": [],
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Held-out F1",
+      "description": "Latest held-out F1 for the attack class.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT f1_score AS value FROM model_evaluations WHERE device_id = 'ALL' ORDER BY evaluation_timestamp DESC LIMIT 1"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 0.5
+              },
+              {
+                "color": "#22c55e",
+                "value": 0.7
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Round devices",
+      "description": "Devices whose update entered the latest round.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT num_devices AS value FROM federated_models ORDER BY created_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#f59e0b",
+                "value": null
+              },
+              {
+                "color": "#14b8a6",
+                "value": 200
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Privacy budget ε",
+      "description": "Cumulative ε after the latest round (δ = 1e-5).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT dp_epsilon AS value FROM federated_models ORDER BY created_at DESC LIMIT 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 25
+              },
+              {
+                "color": "#ef4444",
+                "value": 50
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 7,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Rollbacks in range",
+      "description": "Versions republished because a newer version's held-out F1 dropped by more than 0.10.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM federated_models WHERE num_devices = 0 AND $__timeFilter(created_at)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value",
+        "orientation": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 8,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Held-out accuracy, F1 and baseline",
+      "description": "Scored on readings no device trained on.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, model_accuracy AS \"Accuracy\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, f1_score AS \"F1\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, (true_negatives + false_positives)::float / NULLIF(sample_count, 0) AS \"Always-benign baseline\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Accuracy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "F1"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Always-benign baseline"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#94a3b8"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    6
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Precision and recall",
+      "description": "Precision: predicted attacks that are attacks. Recall: attacks that are caught.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, precision AS \"Precision\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT evaluation_timestamp AS time, recall AS \"Recall\" FROM model_evaluations WHERE device_id = 'ALL' AND $__timeFilter(evaluation_timestamp) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Precision"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#a855f7"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Recall"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f59e0b"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      }
+    },
+    {
+      "type": "row",
+      "title": "Federated rounds",
+      "collapsed": false,
+      "panels": [],
+      "id": 11,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Devices per round",
+      "description": "Devices whose latest update entered each round (minimum 200).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, num_devices AS \"Devices\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Devices"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 12,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Update agreement",
+      "description": "Mean cosine similarity of device updates with the consensus direction. Falling agreement means devices learn different things.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, mean_update_cosine AS \"Agreement\" FROM federated_models WHERE $__timeFilter(created_at) AND num_devices > 0 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 2,
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Agreement"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 13,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 18
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Update clusters",
+      "description": "Groups of at least 3 devices whose updates point in a similar direction (cosine ≥ 0.5).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, num_clusters AS \"Clusters\" FROM federated_models WHERE $__timeFilter(created_at) AND num_devices > 0 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Clusters"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#a855f7"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 14,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 18
+      }
+    },
+    {
+      "type": "row",
+      "title": "Differential privacy",
+      "collapsed": false,
+      "panels": [],
+      "id": 15,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Privacy budget ε",
+      "description": "Cumulative budget; each round adds privacy loss. Alert threshold 50.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, dp_epsilon AS \"ε (δ = 1e-5)\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "rgba(239, 68, 68, 0.12)",
+                "value": 50
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ε (δ = 1e-5)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#a855f7"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 16,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Noise added per round",
+      "description": "Standard deviation of the Gaussian noise on the averaged update: noise multiplier × clip norm / devices.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, dp_noise_std AS \"Noise σ\" FROM federated_models WHERE $__timeFilter(created_at) AND num_devices > 0 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Noise σ"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f59e0b"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 17,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 26
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Updates clipped per round",
+      "description": "Device updates whose L2 norm exceeded the clip norm (1.0) and were scaled down.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT created_at AS time, dp_clipped_updates AS \"Clipped updates\" FROM federated_models WHERE $__timeFilter(created_at) AND num_devices > 0 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Clipped updates"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f97316"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 18,
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 26
+      }
+    },
+    {
+      "type": "row",
+      "title": "Local training",
+      "collapsed": false,
+      "panels": [],
+      "id": 19,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Local training accuracy (training windows)",
+      "description": "Accuracy on each device's own recent training window, not on held-out data.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, MAX(accuracy) AS \"Best device\" FROM local_models WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, AVG(accuracy) AS \"Average\" FROM local_models WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT time_bucket('1 minute', created_at) AS time, MIN(accuracy) AS \"Worst device\" FROM local_models WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Best device"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#22c55e"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Average"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Worst device"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 20,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Local models per minute",
+      "description": "Local training rounds reported to the aggregator (from the 15-second KPI snapshots).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "WITH s AS (SELECT time_bucket('1 minute', timestamp) AS t, MAX(metric_value) AS v FROM dashboard_metrics WHERE metric_name = 'total_local_models_count' AND $__timeFilter(timestamp) GROUP BY 1) SELECT t AS time, GREATEST(0, (v - LAG(v) OVER (ORDER BY t)) * 60 / NULLIF(EXTRACT(EPOCH FROM t - LAG(t) OVER (ORDER BY t)), 0)) AS \"Local models\" FROM s ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": true,
+            "lineInterpolation": "linear",
+            "axisBorderShow": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Local models"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#14b8a6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "id": 21,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      }
+    },
+    {
+      "type": "row",
+      "title": "Round history",
+      "collapsed": false,
+      "panels": [],
+      "id": 22,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      }
+    },
+    {
+      "type": "table",
+      "title": "Federated rounds",
+      "description": "One row per global version.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "flead-timescaledb"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "flead-timescaledb"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT created_at AS \"Time\", global_version AS \"Version\", num_devices AS \"Devices\", total_samples AS \"Samples\", ROUND(mean_update_cosine::numeric, 3) AS \"Agreement\", num_clusters AS \"Clusters\", ROUND(update_norm::numeric, 4) AS \"Update norm\", ROUND(dp_noise_std::numeric, 4) AS \"Noise σ\", dp_clipped_updates AS \"Clipped\", ROUND(dp_epsilon::numeric, 2) AS \"ε\", CASE WHEN num_devices = 0 THEN 'rollback' ELSE '' END AS \"Note\" FROM federated_models WHERE $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "minWidth": 80
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "id": 23,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      }
     }
   ],
-  "refresh": "10s",
+  "refresh": "30s",
   "schemaVersion": 39,
-  "style": "dark",
-  "tags": ["flead", "federated-learning", "ml"],
+  "tags": [
+    "flead",
+    "federated-learning",
+    "privacy"
+  ],
   "templating": {
-    "list": [
-      {
-        "allValue": "ALL",
-        "current": { "selected": true, "text": "All", "value": "$__all" },
-        "datasource": "FLEAD-TimescaleDB",
-        "definition": "SELECT DISTINCT device_id FROM local_models ORDER BY device_id LIMIT 100",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Device",
-        "multi": false,
-        "name": "device",
-        "options": [],
-        "query": "SELECT DISTINCT device_id FROM local_models ORDER BY device_id LIMIT 100;",
-        "refresh": 2,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      }
-    ]
+    "list": []
   },
-  "time": { "from": "now-24h", "to": "now" },
-  "timepicker": {
-    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"],
-    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  "time": {
+    "from": "now-1h",
+    "to": "now"
   },
+  "timepicker": {},
   "timezone": "browser",
-  "title": "FLEAD - Federated Learning Lab",
+  "title": "FLEAD - Federated Learning & Privacy",
   "uid": "flead-fl-lab",
   "version": 1,
   "weekStart": ""

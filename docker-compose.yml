@@ -11,6 +11,11 @@ services:
       context: .
       dockerfile: docker/Dockerfile.data-preprocessor
     container_name: data-preprocessor
+    # Not part of the default `docker compose up`: it rewrites data/processed,
+    # which would pull the device CSVs out from under the running producer
+    # and Spark. START.bat / ./start run it explicitly with
+    # `docker compose run --rm data-preprocessor` only when data is missing.
+    profiles: ["data"]
     working_dir: /app
     command: >
       bash -lc
@@ -52,8 +57,7 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     container_name: kafka-broker-1
     ports:
-      - "9092:9092"    # external client port
-      - "29092:29092"  # optional extra port
+      - "9092:9092"    # client port (the only data listener; 29093 is the internal KRaft controller)
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
@@ -78,6 +82,14 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # The producer can publish before the orchestrator creates the topics;
+      # auto-created topics then get the same 4 partitions instead of 1
+      KAFKA_NUM_PARTITIONS: 4
+      # JMX for Kafka UI's throughput and size figures. The image's launch
+      # script passes the port only to the broker process, so kafka-topics in
+      # the healthcheck and topic setup does not try to bind it.
+      KAFKA_JMX_PORT: 9997
+      KAFKA_JMX_HOSTNAME: kafka-broker-1
 
       # Data dir
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
@@ -89,7 +101,9 @@ services:
     healthcheck:
       test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 30s
-      timeout: 10s
+      # kafka-topics starts a full JVM; under pipeline load it regularly took
+      # >10s, so the broker flapped to "unhealthy" while working normally.
+      timeout: 30s
       retries: 10
       start_period: 180s
 
@@ -100,9 +114,10 @@ services:
     image: timescale/timescaledb:2.15.1-pg14
     container_name: timescaledb
     environment:
-      POSTGRES_DB: flead
-      POSTGRES_USER: flead
-      POSTGRES_PASSWORD: password
+      # Local-demo defaults; override in a .env file (see .env.example)
+      POSTGRES_DB: "${POSTGRES_DB:-flead}"
+      POSTGRES_USER: "${POSTGRES_USER:-flead}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-password}"
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
@@ -125,9 +140,9 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_NAME: flead
-      DB_USER: flead
-      DB_PASSWORD: password
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -143,21 +158,25 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_NAME: flead
-      DB_USER: flead
-      DB_PASSWORD: password
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-broker-1:9092"
     volumes:
       - ./scripts:/app/scripts:ro
     depends_on:
       timescaledb:
         condition: service_healthy
+      # database-init drops and recreates the tables; starting before it
+      # finishes loses the first inserts
+      database-init:
+        condition: service_completed_successfully
       kafka-broker-1:
         condition: service_started
     networks:
       - flead_network
     restart: unless-stopped
-    
+
 
   # -------------------------------------------------
   # 3) FLINK CLUSTER
@@ -181,11 +200,15 @@ services:
         akka.tcp.timeout: 60s
         akka.startup-timeout: 60s
         web.timeout: 60000
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
     ports:
       - "6123:6123"
       - "8161:8081"       # Flink dashboard
     volumes:
       - flink_jobmanager_data:/flink/data
+      # Latest FedAvg global model (written by federated-aggregator)
+      - models_global:/opt/flink/models/global:ro
       - ./scripts:/opt/flink/scripts
       - ./data:/opt/flink/data:ro
       - ./flink-jars:/opt/flink/usrlib
@@ -214,8 +237,12 @@ services:
         akka.tcp.timeout: 60s
         akka.startup-timeout: 60s
         web.timeout: 60000
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
     volumes:
       - ./flink-jars:/opt/flink/usrlib
+      # Local training rounds start from the latest FedAvg global model
+      - models_global:/opt/flink/models/global:ro
     depends_on:
       flink-jobmanager:
         condition: service_started
@@ -236,10 +263,27 @@ services:
       SPARK_NO_DAEMONIZE: "1"
       SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: 7077
-      SPARK_MASTER_WEBUI_PORT: 8080
+      # Web UI ports equal the host ports and SPARK_PUBLIC_DNS makes the UIs
+      # link to localhost; otherwise the application, worker and log links
+      # point at container addresses the browser cannot reach
+      SPARK_MASTER_WEBUI_PORT: 8086
+      SPARK_PUBLIC_DNS: localhost
+      # The analytics driver runs in this container (spark-submit client mode)
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
+      STREAM_ROWS_PER_DEVICE: "${STREAM_ROWS_PER_DEVICE:-660}"
+      # Enables /metrics/master/prometheus for the Prometheus scrape job
+      SPARK_MASTER_OPTS: >-
+        -Dspark.metrics.conf.*.sink.prometheusServlet.class=org.apache.spark.metrics.sink.PrometheusServlet
+        -Dspark.metrics.conf.*.sink.prometheusServlet.path=/metrics/prometheus
+        -Dspark.metrics.conf.master.sink.prometheusServlet.path=/metrics/master/prometheus
     ports:
-      - "8086:8080"
+      - "8086:8086"
       - "7077:7077"
+      - "4040:4040"     # UI of the running analytics job (its driver runs here)
     volumes:
       - spark_master_data:/opt/spark/work
       - ./scripts:/opt/spark/scripts
@@ -248,7 +292,7 @@ services:
     networks:
       - flead_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/json/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8086/json/"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -267,17 +311,24 @@ services:
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       SPARK_NO_DAEMONIZE: "1"
+      SPARK_WORKER_WEBUI_PORT: 8087
+      SPARK_PUBLIC_DNS: localhost
     volumes:
       - spark_worker_data:/opt/spark/work
+      # Executors run here, so the worker needs the same data and scripts
+      # paths as spark-master; without this, batch analysis fails with
+      # "File file:/opt/spark/data/processed/device_N.csv does not exist".
+      - ./data:/opt/spark/data:ro
+      - ./scripts:/opt/spark/scripts
     depends_on:
       spark-master:
         condition: service_healthy
     networks:
       - flead_network
     ports:
-      - "8087:8081"
+      - "8087:8087"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/json/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8087/json/"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -294,6 +345,9 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: flead
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-broker-1:9092"
+      # Without broker metrics the dashboard shows 0 bytes produced and consumed
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9997
+      KAFKA_CLUSTERS_0_METRICS_TYPE: JMX
     depends_on:
       kafka-broker-1:
         condition: service_started
@@ -311,11 +365,15 @@ services:
     command: [
       "python", "scripts/02_kafka_producer.py",
       "--source", "data/processed",
-      "--rate", "10",
+      # 2,400 devices share this rate round-robin. At 10 msg/s each device
+      # got one reading every ~4 min, so the per-device RCF never warmed up
+      # (0 anomalies) and local models trained on 1-2 samples.
+      "--rate", "150",
       "--topic", "edge-iiot-stream"
     ]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka-broker-1:9092"
+      STREAM_ROWS_PER_DEVICE: "${STREAM_ROWS_PER_DEVICE:-660}"
     volumes:
       - ./data/processed:/app/data/processed:ro
       - ./scripts:/app/scripts:ro
@@ -337,11 +395,12 @@ services:
     container_name: federated-aggregator
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka-broker-1:9092"
-      TIMESCALEDB_HOST: timescaledb
-      TIMESCALEDB_PORT: 5432
-      TIMESCALEDB_DB: flead
-      TIMESCALEDB_USER: flead
-      TIMESCALEDB_PASSWORD: password
+      # config_loader reads DB_*; the previous TIMESCALEDB_* names were ignored
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
     volumes:
       - models_global:/app/models/global
     depends_on:
@@ -349,25 +408,38 @@ services:
         condition: service_started
       timescaledb:
         condition: service_healthy
+      database-init:
+        condition: service_completed_successfully
     networks:
       - flead_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 9092)); s.close()"]
+      # Kafka is a separate container; inside the aggregator "localhost:9092"
+      # is never listening, so this check used to report unhealthy forever.
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('kafka-broker-1', 9092)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
 
   # -------------------------------------------------
-  # 7b) SPARK ANALYTICS – DASHBOARD METRICS UPDATER
+  # 7b) DASHBOARD METRICS UPDATER (KPI snapshots for Grafana)
+  # Not Spark: the Spark analytics job is submitted to spark-master by
+  # scripts/pipeline_orchestrator.py. This service only writes KPI rows to
+  # dashboard_metrics every 15 s.
   # -------------------------------------------------
-  spark-analytics:
+  dashboard-metrics-updater:
     build:
       context: .
       dockerfile: docker/Dockerfile.aggregator
-    container_name: spark-analytics
+    container_name: dashboard-metrics-updater
     command: ["python", "scripts/dashboard_metrics_updater.py"]
+    environment:
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
     volumes:
       - ./scripts:/app/scripts:ro
     depends_on:
@@ -395,9 +467,10 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_NAME: flead
-      DB_USER: flead
-      DB_PASSWORD: password
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
+      STREAM_ROWS_PER_DEVICE: "${STREAM_ROWS_PER_DEVICE:-660}"
       PORT: 5000
     volumes:
       - ./data:/app/data:ro
@@ -421,9 +494,9 @@ services:
     environment:
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_NAME: flead
-      DB_USER: flead
-      DB_PASSWORD: password
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-broker-1:9092"
     depends_on:
       timescaledb:
@@ -443,9 +516,13 @@ services:
     ports:
       - "3001:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/flead_home.json
+      # Interpolated into grafana/provisioning/datasources/default.yaml
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -463,13 +540,13 @@ services:
     container_name: grafana-init
     environment:
       GRAFANA_URL: http://grafana:3000
-      GRAFANA_USER: admin
-      GRAFANA_PASSWORD: admin
+      GRAFANA_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GRAFANA_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
       DB_HOST: timescaledb
       DB_PORT: 5432
-      DB_NAME: flead
-      DB_USER: flead
-      DB_PASSWORD: password
+      DB_NAME: "${POSTGRES_DB:-flead}"
+      DB_USER: "${POSTGRES_USER:-flead}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-password}"
     volumes:
       - ./grafana/dashboards:/app/dashboards:ro
       - ./scripts/06_setup_grafana.py:/app/scripts/06_setup_grafana.py:ro

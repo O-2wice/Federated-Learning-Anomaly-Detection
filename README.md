@@ -1,563 +1,200 @@
-# Federated Learning Platform for Edge IoT Data
+# FLEAD: Federated Learning for Edge Anomaly Detection
 
-## Deployment Architecture
+[![tests](https://github.com/O-2wice/Federated-Learning-Anomaly-Detection/actions/workflows/tests.yml/badge.svg)](https://github.com/O-2wice/Federated-Learning-Anomaly-Detection/actions/workflows/tests.yml)
+![Problem](https://img.shields.io/badge/problem-IoT%20attack%20detection-2b6cb0)
+![Data](https://img.shields.io/badge/data-Edge--IIoTset-2a9d8f)
+![Streaming](https://img.shields.io/badge/streaming-Kafka%20%7C%20Flink%20%7C%20Spark-orange)
+![Learning](https://img.shields.io/badge/learning-federated%20%2B%20differential%20privacy-7c3aed)
+![Storage](https://img.shields.io/badge/storage-TimescaleDB-2a9d8f)
+![Monitoring](https://img.shields.io/badge/monitoring-Grafana%20%7C%20Prometheus-orange)
+![Runs on](https://img.shields.io/badge/runs%20on-Docker%20Compose-2496ed)
+![Language](https://img.shields.io/badge/python-3.10-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-The FLEAD platform employs a fully containerized Docker approach, utilizing a single-broker Kafka configuration to simulate realistic IoT streams while keeping resource usage low. All components (Kafka, Flink, Spark, TimescaleDB, and Grafana) run in isolated Docker containers, eliminating the complexities of local environment setup and ensuring cross-platform compatibility.
+FLEAD streams real IoT network traffic from 2,400 simulated devices and runs
+two detectors on it. One is label-free anomaly scoring on every reading. The
+other is an attack classifier that the devices train together through
+differentially private federated learning, without pooling their data. One
+command starts the whole pipeline: Kafka, Flink, a
+federated aggregator, Spark, TimescaleDB, Grafana and Prometheus.
 
-### Single-Broker Kafka Configuration
+## What it does
 
-The system uses a single Kafka broker for development and lightweight local deployments. All 2400 IoT devices stream to the broker `kafka-broker-1` and data is partitioned inside that single broker as needed. This setup reduces complexity and resource usage.
+- **Streams** the Edge-IIoTset dataset as 2,400 concurrent devices at 150
+  readings/s into a single KRaft Kafka broker. The producer confirms every
+  delivery.
+- **Scores every reading** in Flink with a Robust Random Cut Forest over 46
+  features, using per-device adaptive thresholds. About 6% of readings are
+  flagged, and 65–86% of those are real attacks across runs (28% base rate).
+  No labels are involved.
+- **Trains locally** in Flink: one logistic regression per device, on that
+  device's recent readings, starting from the latest global model.
+- **Aggregates privately** with buffered asynchronous FedAvg and DP-FedAvg
+  (update clipping, Gaussian noise, Rényi-DP accountant). Each round's update
+  agreement and client clusters are tracked.
+- **Evaluates honestly:** Spark scores every global model on readings no device
+  trained on, next to the always-benign baseline. A model registry rolls back
+  automatically when held-out F1 drops.
+- **Is observable:** a live pipeline monitor that shows each stage's freshness,
+  model quality, privacy budget and alerts at a glance; 5 Grafana dashboards
+  generated as code; Prometheus with 16 alert rules and Alertmanager; and a
+  device viewer that links each device's data to its pipeline results.
 
-### Docker-Only Approach
+## Results
 
-All components run in Docker containers with no local Python dependencies required. The Kafka producer script (`02_kafka_producer.py`) automatically:
+From one 77-minute run of the full pipeline.
 
-1. Discovers and loads all device CSV files from data/processed/
-2. Connects to the single Kafka broker
-3. Streams messages across all devices at a configurable rate
-4. Publishes to `edge-iiot-stream` topic
+| | Result |
+| --- | --- |
+| Held-out accuracy / F1 of the global model | **0.858 / 0.739** after 68 rounds (77-minute run), vs 0.714 for always predicting benign |
+| Same model without DP (offline, 60 devices × 660 readings) | 0.856 / 0.73 |
+| Devices per federated round | Median 307 (200–502), about one round per minute |
+| Privacy budget | ε = 9.35 after 69 rounds (δ = 1e-5); median DP noise std 0.016 |
+| RRCF detection | 5.8% of readings flagged, 74% of them attacks live; ROC AUC 0.65–0.66 offline |
+| Throughput | Flink keeps up with the 150 readings/s stream (Kafka lag 0). Retraining every ~3 readings had held it at ~105/s with a lag past a million readings; retraining every 30 fixed it |
+| Delivery | 694,999 of 695,000 queued readings confirmed by Kafka, 0 failed (the last was in flight) |
 
-This approach eliminates NumPy compilation issues on Windows and ensures identical deployment across Windows, macOS, and Linux.
+Details and the experiments behind the settings:
+[SYSTEM.md](SYSTEM.md#4-measured-results) and
+[docs/RCF_EXPLAINED.md](docs/RCF_EXPLAINED.md). The design story, with the
+problems found along the way: [case study](docs/case-study/index.qmd).
 
-## Project Architecture
+![Pipeline monitor](docs/case-study/images/monitor.png)
 
-![FLEAD architecture](/project_architecture.png)
+![Held-out accuracy and F1 per global model version](docs/case-study/images/chart-heldout.png)
 
-## Device Viewer
+## Architecture
 
-![Device Viewer](/Device%20Viewer.PNG)
-
-## Pipeline Monitor
-
-![Pipline Moniter](/Moniter.PNG)
-
-**Key Features:**
-
--   Real-time streaming data processing with a single-broker Apache Kafka
--   Distributed model training on 2400 IoT devices using Apache Flink
--   Federated model aggregation using FedAvg algorithm
--   Time-series analytics with TimescaleDB and Apache Spark
--   Interactive visualization dashboards with Grafana 11.0.0
--   Complete Docker containerization (no local dependencies required)
--   Cross-platform deployment (Windows, macOS, Linux)
--   Automatic service orchestration and health checking
-
-## 🚀 Advanced Features
-
-### Model Version Registry with Rollback
-
-The federated aggregation service includes a comprehensive **Model Version Registry** that enables production-grade model management:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Model Registry                                │
-├─────────────────────────────────────────────────────────────────┤
-│ Version │ Accuracy │ Devices │  Status  │     Created At        │
-├─────────┼──────────┼─────────┼──────────┼───────────────────────┤
-│   v12   │  94.2%   │   128   │  active  │  2024-01-15 10:30:00  │
-│   v11   │  93.8%   │   125   │ archived │  2024-01-15 10:15:00  │
-│   v10   │  91.2%   │   130   │ archived │  2024-01-15 10:00:00  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Key Capabilities:**
-- **Version Tracking**: Every aggregated model is versioned and persisted
-- **Best Model Tracking**: Automatically identifies the best-performing model version
-- **Rollback Support**: Instantly rollback to any previous model version if accuracy degrades
-- **Model Archiving**: Old versions are archived (not deleted) for compliance and analysis
-- **Contribution Tracking**: Records which devices contributed to each model version
-
-### Adaptive Anomaly Thresholds
-
-Instead of using a fixed anomaly threshold, the system now **adapts thresholds per device** based on historical patterns:
-
-```python
-# Configuration
-ADAPTIVE_THRESHOLD_ENABLED = True
-TARGET_ANOMALY_RATE = 0.05          # Target 5% anomaly rate
-MIN_THRESHOLD = 0.2                  # Lower bound
-MAX_THRESHOLD = 0.8                  # Upper bound
-THRESHOLD_ADJUSTMENT_FACTOR = 0.02   # Adjustment step
-```
-
-**How It Works:**
-1. Each device maintains its own threshold (starts at 0.4)
-2. System tracks anomaly rate over a sliding window of 100 samples
-3. If anomaly rate > 7.5% (1.5x target), threshold increases
-4. If anomaly rate < 2.5% (0.5x target), threshold decreases
-5. Thresholds are bounded between 0.2 and 0.8
-
-**Benefits:**
-- **Reduced False Positives**: Noisy devices get higher thresholds automatically
-- **Better Sensitivity**: Stable devices can detect subtle anomalies with lower thresholds
-- **Self-Calibrating**: No manual tuning required per device
-
-### Performance Monitoring & Alerting
-
-The system includes built-in health monitoring with automatic alerts:
-
-| Alert Category | Severity | Trigger Condition |
-|----------------|----------|-------------------|
-| `accuracy_degradation` | WARNING | Accuracy drops >5% from recent average |
-| `stale_devices` | WARNING | >30% devices inactive for 24+ hours |
-| `low_participation` | INFO | Fewer than 4 devices in aggregation |
-
-Alerts are:
-- Published to `system-alerts` Kafka topic for external consumption
-- Logged with severity-appropriate emoji indicators
-- Stored in memory for dashboard queries
-
-### Data Quality Monitoring
-
-Real-time data quality checks on incoming IoT readings:
-
-```python
-# Quality checks per reading:
-├── Invalid Value Detection (NaN, Inf)
-├── Extreme Value Detection (>10σ from mean)
-└── Stuck Sensor Detection (5+ identical consecutive values)
+```mermaid
+flowchart LR
+    CSV["2,400 device CSVs"] --> P["Producer<br/>150 readings/s"]
+    P --> K[("Kafka<br/>edge-iiot-stream")]
+    K --> F["Flink job"]
+    F -- "RRCF score" --> AN[("anomalies")]
+    F -- "local logistic regression" --> LM[("local-model-updates")]
+    LM --> AG["Federated aggregator<br/>FedAvg + DP, registry"]
+    AG -- "global model" --> F
+    AG -- "global model" --> S["Spark<br/>held-out evaluation,<br/>fleet z-score"]
+    K --> S
+    K --> C["Collector"]
+    AN --> C
+    C --> DB[("TimescaleDB")]
+    S --> DB
+    AG --> DB
+    DB --> GR["Grafana"]
+    DB --> MO["Monitor +<br/>metrics exporter"]
+    MO --> PR["Prometheus +<br/>Alertmanager"]
 ```
 
-**Quality Score**: Each reading gets a quality score (0.0-1.0) that affects anomaly detection confidence.
+How each stage works: [SYSTEM.md](SYSTEM.md). Containers, ports and volumes:
+[DOCKER_ARCHITECTURE.md](DOCKER_ARCHITECTURE.md).
 
-### System Status API
+## Quick start
 
-The aggregator exposes a comprehensive status endpoint:
+**Requirements:** Docker Desktop (about 8 GB RAM for Docker, 10 GB disk) and
+Python 3 on the host; the orchestrator uses only the standard library. The
+first run downloads the dataset from Kaggle, so place your API token at
+`kaggle/kaggle.json` (git-ignored).
 
-```python
-status = aggregator.get_system_status()
-
-# Returns:
-{
-    "global_model": { "version": 12, "accuracy": 0.942, ... },
-    "aggregation_round": 6,
-    "pending_updates": 3,
-    "buffered_devices": 45,
-    "model_registry": {
-        "total_versions": 12,
-        "best_version": 12,
-        "best_accuracy": 0.942
-    },
-    "performance": {
-        "accuracy_trend": "improving",
-        "active_devices": 128,
-        "recent_alerts": [...]
-    }
-}
+```bash
+START.bat          # Windows
+./start            # Linux, macOS, Git Bash
 ```
 
-## Random Cut Forest (RCF) Anomaly Detection
+The script builds the images, starts the stack, submits the Flink and Spark
+jobs and opens the web interfaces. The first global model
+appears about 5 minutes after start, once devices have buffered enough
+readings and 200 of them have reported; held-out metrics follow within 3
+minutes.
 
-The platform uses Random Cut Forest for real-time anomaly detection in IoT data streams, leveraging key stream mining concepts:
-
-### Incremental Learning
-RCF uses 50 trees, each maintaining only 256 samples—not the entire data history. When new data arrives, points are inserted incrementally and old points are automatically forgotten when the tree exceeds capacity. No batch retraining is needed; the model updates itself point-by-point.
-
-### Sliding Windows (Shingling)
-Instead of scoring single values, we create a shingle (sliding window of size 4) that captures the temporal pattern `[t-3, t-2, t-1, t]`. This lets RCF detect sequential anomalies like sudden spikes and trend breaks, not just point outliers. The buffer slides forward with each new reading, always keeping the most recent 4 values.
-
-### Drift-Adaptive Modeling
-Each tree holds only 256 samples, so older data naturally "falls out." This creates implicit concept drift adaptation—the model always reflects recent behavior. If a sensor's normal range shifts over time (e.g., seasonal temperature changes), the model adapts within approximately 256 samples.
-
-### Real-Time Scoring
-Collusive Displacement (CoDisp) is computed in logarithmic time O(log n). Scores are normalized to a [0, 1] range for interpretable thresholding, and anomalies are flagged instantly as each reading arrives.
-
-```
-IoT Reading → Shingle Buffer → RCF Insert → CoDisp Score → Threshold → Alert
-     ↓              ↓              ↓              ↓            ↓
- {"temp": 25}  [23,24,24,25]   Tree update     0.12        normal
- {"temp": 99}  [24,24,25,99]   Tree update     0.85        → TimescaleDB
+```bash
+STOP.bat           # Windows
+./stop             # Linux, macOS, Git Bash
 ```
 
-This design means the model is always current, never needs retraining, and runs indefinitely on streaming data with constant memory usage.
+Stopping removes the project's containers and keeps all data volumes.
 
-**Core Technologies:**
+Default credentials (Grafana `admin` / `admin`, database `flead` / `password`)
+can be changed by copying `.env.example` to `.env`.
 
--   Apache Kafka 7.6.1 - Single-broker message streaming (KRaft mode)
--   Apache Flink 1.18 - Real-time processing
--   Apache Spark 3.5.0 - Batch analytics
--   TimescaleDB (PostgreSQL 16) - Time-series database
--   Grafana 11.0.0 - Visualization
--   Docker - Complete containerization (no local setup required)
+## Web interfaces
+
+| Interface | URL |
+| --- | --- |
+| Grafana dashboards | <http://localhost:3001> |
+| Pipeline monitor | <http://localhost:5001> |
+| Prometheus / Alertmanager | <http://localhost:9090> / <http://localhost:9093> |
+| Flink | <http://localhost:8161> |
+| Spark master / worker / running job | <http://localhost:8086> / <http://localhost:8087> / <http://localhost:4040> |
+| Kafka UI | <http://localhost:8081> |
+| Device viewer | <http://localhost:8082> |
+| Jupyter | <http://localhost:8888> (JupyterLab takes about 15 s to load) |
+
+Prometheus shows times in UTC until you tick *Use local time* on its graph page.
+
+## Repository layout
+
+```text
+scripts/                pipeline code: producer, Flink job and models, aggregator,
+                        Spark job, collector, metrics updater, orchestrator
+tests/                  unit tests (run in CI)
+docker/                 Dockerfiles; docker-compose.yml defines the 20 services
+grafana/                dashboards (generated by build_dashboards.py) and provisioning
+prometheus/             scrape config, alert rules, Alertmanager
+monitoring_dashboard/   live pipeline monitor and Prometheus exporter (Flask)
+device-viewer/          device file browser (Flask)
+notebooks/              preprocessing walkthrough
+docs/                   RRCF and Kafka design notes
+```
+
+## Tests
+
+```bash
+pip install -r requirements/tests.txt
+pytest tests
+```
+
+53 unit tests run without Docker. They cover:
+
+- the producer, including its delivery watchdog;
+- device data generation;
+- the RRCF and local model;
+- federated aggregation, DP accounting and rollback;
+- the evaluation metrics;
+- the Grafana dashboards: real data source uids, a valid layout and no
+  unbounded queries on the large tables.
+
+GitHub Actions runs them on every push, together with a `docker-compose.yml`
+validation.
 
 ## Dataset
 
-This platform uses the Edge-IIoTset dataset, which contains network traffic and IoT device telemetry data.
-
--   **Source**: [Edge-IIoTset on Kaggle](https://www.kaggle.com/datasets/sibasispradhan/edge-iiotset-dataset)
--   **Preprocessing Notebook**: [Data Preprocessing](https://www.kaggle.com/code/imedbenmadi/notebookf27d2cfbac)
--   **Features**: 60+ network traffic features, including TCP, MQTT, DNS, and HTTP metrics
--   **Devices**: 2407 preprocessed device CSV files
-
-## 🎥 Video Tutorials
-
-| Topic | Description | Link |
-|-------|-------------|------|
-| Data Preprocessing | How we transform raw Edge-IIoT data into streaming format | [▶️ Watch on YouTube](https://youtu.be/g82BOQFhSbc) |
-
-## Docker Deployment Guide
-
-### Prerequisites
-
--   Docker Desktop (Windows, macOS, or Linux)
--   No local Python installation required
--   Recommended: 8GB+ RAM, 10GB+ disk space
-    -   Kaggle API Token (optional): If you want Docker to automatically download the Edge-IIoTSet dataset
-            and generate processed chunks, place your Kaggle API token file `kaggle.json` inside the
-            repository `kaggle/` folder: `./kaggle/kaggle.json`. The Docker compose mounts this directory into
-            containers at `/root/.kaggle` so the `data-preprocessor` service (or Jupyter notebook) can access it.
-    -   Security note: `kaggle.json` contains sensitive API credentials. Do NOT commit your `kaggle.json` to the repository.
-            The project `.gitignore` already includes `kaggle/kaggle.json` and will prevent accidental commits.
-
-### Why Docker-Only Architecture
-
-This project uses complete containerization to avoid common deployment issues:
-
-**Problem**: NumPy compilation on Windows requires C compiler (not installed by default)
-**Solution**: All dependencies pre-installed in Docker images
-
-**Problem**: Different Python versions/packages on each machine lead to incompatibilities
-**Solution**: Identical environments in containers across all machines
-
-**Problem**: Hard to manage 17 interconnected services with proper ordering
-**Solution**: Docker Compose orchestrates services with automatic dependency management
-
-**Problem**: Difficulty scaling to production environments
-**Solution**: Docker images are production-ready and deployable to any platform
-
-### System Components
-
-18 total Docker containers (including optional dev and preprocessing services):
-
-**Kafka Cluster (1 container)**
-
--   kafka-broker-1 (Port 9092)
-
-**Infrastructure (2 containers)**
-
--   timescaledb (PostgreSQL 16 with TimescaleDB extension)
--   grafana (Data visualization)
- -   data-preprocessor (optional) — Downloads Edge-IIoTSet from Kaggle and creates processed chunks
-    (service runs automatically if `data/processed/chunks` are missing)
-
-**Stream Processing (4 containers)**
-
--   flink-jobmanager
--   flink-taskmanager
--   spark-master
--   spark-worker-1
-
-**Batch Processing (2 containers)**
-
--   kafka-ui (Kafka management interface)
--   kafka-producer (Streams 2400 devices across brokers)
- -   jupyter-dev (Optional dev environment - mounts `./kaggle` and supports notebook exploration)
-
-**Initialization (3 containers - run once)**
-
--   database-init (Creates schema)
--   grafana-init (Configures dashboards)
--   federated-aggregator (Aggregates models)
-
-### Docker Container Images
-
-**Custom Images (built during startup)**
-
--   `ost-kafka-producer:latest` - Kafka producer
--   `ost-flink-jobmanager:latest` - Flink coordinator
--   `ost-flink-taskmanager:latest` - Flink worker
--   `ost-spark-master:latest` - Spark coordinator
--   `ost-spark-worker-1:latest` - Spark executor
--   `ost-federated-aggregator:latest` - Federated aggregation
--   `ost-data-preprocessor:latest` - Kaggle downloader & preprocessing
-
-**Pre-built Images (from Docker Hub)**
-
--   `confluentinc/cp-kafka:7.6.1` (4 instances)
--   `timescale/timescaledb-ha:pg16`
--   `grafana/grafana:11.0.0`
--   `provectuslabs/kafka-ui:latest`
-
-### Networking
-
-All containers connected via Docker bridge network `flead_network`:
-
-**Internal DNS Resolution** (within containers)
-
--   kafka-broker-1:9092
--   timescaledb:5432 (Database)
--   flink-jobmanager:6123 (Flink RPC)
--   spark-master:7077 (Spark cluster)
-
-**External Access** (from host machine)
-
--   Kafka: localhost:9092 (also 29092)
--   TimescaleDB: localhost:5432
--   Grafana: localhost:3001
--   Kafka UI: localhost:8081
--   Flink UI: localhost:8161
--   Spark Master UI: localhost:8086
--   Spark Worker UI: localhost:8087
--   Device Viewer: localhost:8082
--   Monitoring Dashboard: localhost:5001
--   Jupyter Lab: localhost:8888
-
-### Volume Mounting
-
-**Data Volumes** (persistent storage)
-
--   kafka_broker_1_data
--   timescaledb_data
-
-**Code Volumes** (host machine)
-
--   ./scripts (mounted as /opt/flink/scripts in Flink)
--   ./data/processed (CSV files, read-only mount)
--   ./models (federated learning models, persistent)
- -   ./kaggle (Kaggle credentials - mounted to `/root/.kaggle` in containers; place `kaggle.json` here)
-
-### Health Checks
-
-Each container has automated health checks:
-
-```
-Kafka brokers: Check cluster membership (healthy after 30 seconds)
-TimescaleDB: pg_isready command
-Grafana: HTTP health endpoint
-Flink: Web UI accessibility check
-Spark: Web UI accessibility check
-```
-
-Docker Compose waits for health checks before starting dependent services.
-
-## Dataset
-
-This platform uses the Edge-IIoTset dataset, which contains network traffic and IoT device telemetry data.
-
--   **Source**: [Edge-IIoTset on Kaggle](https://www.kaggle.com/datasets/sibasispradhan/edge-iiotset-dataset)
--   **Preprocessing Notebook**: [Data Preprocessing](https://www.kaggle.com/code/imedbenmadi/notebookf27d2cfbac)
--   **Features**: 60+ network traffic features, including TCP, MQTT, DNS, and HTTP metrics
--   **Devices**: 2407 preprocessed device CSV files
-
-## Run the Project
-
-```batch
-START.bat
-```
-
-This script:
-
-1. Verifies Docker is installed and running
-2. Stops any existing containers
-3. Builds all 6 custom Docker images (if needed)
-4. (Optional) Starts the `data-preprocessor` and `jupyter-dev` containers when present
-    - `data-preprocessor` downloads the Edge-IIoTSet from Kaggle (requires `./kaggle/kaggle.json`) and generates `data/processed/chunks/`.
-    - `jupyter-dev` provides an interactive notebook environment and mounts `./kaggle` for convenience
-5. Starts 17 total Docker containers (1 Kafka broker + supporting services)
-6. Waits 60 seconds for services to become healthy
-7. Launches pipeline orchestrator to open all dashboards automatically
-
-Alternative (cross-platform, host): `python scripts/pipeline_orchestrator.py`
-
-Tip: The Windows `START.bat` script accepts `--fast` and `--no-wait` flags which are passed to `pipeline_orchestrator.py`.
-Examples:
-
-```powershell
-START.bat --fast
-START.bat --no-wait
-```
-
-If you need to run a full reset of the stack with backups and a fresh rebuild, you can use `scripts/cleanup_and_build.ps1` (PowerShell) or the manual commands documented below.
-
-Tip: The orchestrator now supports `--fast` and `--no-wait` flags to reduce or skip the health checks during startup. Example:
-
-```bash
-# Run orchestrator with shortened waits (good for a powerful laptop)
-python scripts/pipeline_orchestrator.py --fast
-
-# Run orchestrator without any container health checks (start immediately)
-python scripts/pipeline_orchestrator.py --no-wait
-```
-
-Notes:
-- Spark driver (host) uses `SPARK_MASTER` with default `spark://localhost:7077` (set in `pipeline_orchestrator.py` and `05_spark_analytics.py`).
-- In-cluster submit option: `docker compose exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 /opt/spark/scripts/05_spark_analytics.py`.
-- Spark analytics logs: `logs/spark_analytics.log`; orchestrator log: `logs/pipeline_orchestrator.log`.
-- `spark-analytics` service reuses the aggregator image; `dashboard_metrics_updater.py` is baked into `docker/Dockerfile.aggregator`.
-
-No local Python installation or dependency installation required. All dependencies are pre-installed in Docker container images.
-
-## Stop the Project
-
-```batch
-STOP.bat
-```
-
-This script gracefully stops all Docker containers and preserves data volumes for next restart.
-
-## System Architecture
-
-```
-CSV Files (2400 devices) → Kafka Single-Broker (kafka-broker-1)
-    └─ Broker 1: devices_0-2399
-        ↓ (edge-iiot-stream topic)
-Flink (Local Training) → Local Model Updates
-    ↓ (local-model-updates topic)
-Federated Server (FedAvg) → Global Model
-    ↓ (global-model-updates topic)
-Spark Analytics → TimescaleDB → Grafana
-```
-
-### Kafka Configuration
-
--   **Mode**: KRaft (no Zookeeper required)
--   **Cluster ID**: 4L6g3nQlTjGEKK1RVAx_vQ
--   **Replication Factor**: 1 (single-broker; no inter-broker replication)
--   **Partitions**: 4 (one per broker)
--   **Bootstrap Servers**: kafka-broker-1:9092
-
-### Service Dependencies
-
-All services depend on the Kafka broker being healthy before starting:
-
--   Flink JobManager/TaskManager → kafka-broker-1
--   Spark Master/Worker → kafka-broker-1
--   Kafka Producer → kafka-broker-1
--   Federated Aggregator → kafka-broker-1
-
-This ensures all consumers can access all partitions and prevents message loss.
-
-## Access Points
-
-| Service       | URL                   | Purpose               |
-| ------------- | --------------------- | --------------------- |
-| Device Viewer | http://localhost:8082 | Browse devices        |
-| Kafka UI      | http://localhost:8081 | Monitor streams       |
-| Grafana       | http://localhost:3001 | View dashboards       |
-| Flink UI      | http://localhost:8161 | Job monitoring        |
-| Monitoring    | http://localhost:5001 | Live system dashboard |
-
-**Database:** localhost:5432 (user: flead, password: password)
-
-### Grafana (Professional Dashboards)
-
--   **URL**: http://localhost:3001
--   **Login**: admin / admin
--   **Features**:
-    -   Historical trends
-    -   8 pre-configured panels
-    -   Model accuracy graphs
-    -   Device performance rankings
-    -   Real-time data refresh (30 seconds)
-    -   Data source: TimescaleDB (direct SQL queries)
-
-### Monitoring Dashboard
-
--   **URL**: http://localhost:5001
--   **Features**:
-    -   Service logos (Kafka, Flink, TimescaleDB, Grafana)
-    -   Real-time pipeline flow visualization
-    -   Color-coded health indicators
-    -   Recent activity feed
-    -   Updates every 2 seconds
-
-### Docker Services Status
-
-```bash
-docker-compose ps
-```
-
-Expected output: All 17 containers should show "Up" or "Healthy" status:
-
--   1 Kafka broker (kafka-broker-1) - Healthy
--   1 TimescaleDB - Healthy
--   1 Grafana - Healthy
--   2 Flink nodes (JobManager, TaskManager) - Healthy
--   2 Spark nodes (Master, Worker) - Up
--   3 Init services (database-init, grafana-init, kafka-ui) - Up or Exited
--   2 Streaming services (kafka-producer, federated-aggregator) - Up
-
-## Pipeline Explanation
-
-### Data Distribution Strategy
-
-The Kafka producer distributes 2400 IoT devices onto a single broker using device_id mapping:
-
-```python
-broker_index = (device_id_number // 600) % 4
-```
-
-Result: Each broker receives exactly 600 devices with independent data streams:
-
--   Broker 1: device_0 → device_599
--   Broker 2: device_600 → device_1199
--   Broker 3: device_1200 → device_1799
--   Broker 4: device_1800 → device_2399
-
-All Kafka consumers (Flink, Spark, Aggregator) connect to the single broker via the bootstrap server, ensuring access to the complete dataset. This single-broker setup has no inter-broker replication (replication factor = 1).
-
-### Component Pipeline
-
---   **Kafka Producer**: Streams 10 messages/second from randomly selected devices to the single broker.
--   **Local Training (Flink)**: Each device trains using Random Cut Forest (RCF) anomaly detection on its data stream.
--   **Federated Aggregation**: Aggregates local models using FedAvg algorithm after receiving 20 device updates.
--   **Spark Analytics**: Processes data from all brokers and stores results in TimescaleDB. Grafana displays real-time dashboards with a 30-second refresh.
-
-### 1. Data Streaming (Single-Broker)
-
-Kafka producer streams 10 messages/second from randomly selected devices across 4 independent brokers. Each device is permanently assigned to one broker based on device_id, ensuring consistent routing and proper load distribution.
-
-**Message Flow:**
-
---   Producer connects to the single broker bootstrap server
--   Producer randomly selects a device from all 2400 devices
--   Message routes to correct broker partition based on device assignment
--   Consumers (Flink, Spark) read from all brokers simultaneously
-
-### 2. Local Training (Flink)
-
-Each device trains using **Random Cut Forest (RCF)** anomaly detection on its data stream:
-
--   Maintains an ensemble of 50 random cut trees per device
--   Each tree holds up to 256 samples with temporal shingle size of 4
--   Anomaly score range: 0.0 (normal) to 1.0 (highly anomalous)
--   Detects anomaly if score > 0.4 (configurable threshold)
--   Trains local SGD model every 50 rows OR 60 seconds per device
-
-**Training trigger:** Every 50 rows OR every 60 seconds per device
-
-**RCF Anomaly Detection:**
-- Streaming-friendly unsupervised algorithm
-- No pre-defined thresholds based on distribution assumptions
-- Automatically adapts to data patterns
-
-### 3. Federated Aggregation
-
-Aggregates local models from all brokers using FedAvg algorithm after receiving 20 device updates.
-
-**Formula:**
-
-```
-Global Accuracy = Σ(Local Accuracy × Samples) / Σ(Samples)
-accuracy = min(0.95, 0.7 + (model['version'] * 0.02))
-```
-
-### 4. Analytics & Visualization (Single-Broker)
-
-Spark reads data from the single Kafka broker and stores results in TimescaleDB. Grafana displays real-time dashboards with 30-second refresh, sourcing data from TimescaleDB via direct SQL queries.
-
-**Processing Pipeline:**
-
---   Spark connects to the single broker bootstrap server
--   Reads complete dataset from all brokers (with replication redundancy)
--   Evaluates models on diverse data across all partitions
--   Stores results in TimescaleDB hypertables (time-series optimized)
--   Grafana queries TimescaleDB for visualization
-
-| Component          | Processing Time   |
-| ------------------ | ----------------- |
-| Kafka streaming    | 5 messages/sec    |
-| Flink processing   | <10ms per event   |
-| Model training     | 50 rows or 60 sec |
-| Global aggregation | Every 20 updates  |
-| End-to-end latency | 5-15 seconds      |
+Edge-IIoTset: M. A. Ferrag, O. Friha, D. Hamouda, L. Maglaras, H. Janicke,
+*Edge-IIoTset: A New Comprehensive Realistic Cyber Security Dataset of IoT and
+IIoT Applications for Centralized and Federated Learning*, IEEE Access, 2022.
+Available on [Kaggle](https://www.kaggle.com/datasets/sibasispradhan/edge-iiotset-dataset).
+
+## Limitations
+
+- **Single broker:** no replication.
+- **Linear classifier:** logistic regression caps the classifier's accuracy.
+- **Privacy scope:** DP protects updates from anyone who sees the global
+  models, not from the aggregator.
+- **Simulated fleet:** the devices are random partitions of one dataset.
+
+More in [SYSTEM.md](SYSTEM.md#5-limitations).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+## References
+
+- S. Guha et al., *Robust Random Cut Forest Based Anomaly Detection on Streams*, ICML 2016.
+- B. McMahan et al., *Communication-Efficient Learning of Deep Networks from Decentralized Data*, AISTATS 2017.
+- H. B. McMahan et al., *Learning Differentially Private Recurrent Language Models*, ICLR 2018.
+- J. Nguyen et al., *Federated Learning with Buffered Asynchronous Aggregation*, AISTATS 2022.
+- I. Mironov, *Rényi Differential Privacy*, IEEE CSF 2017.
+- J. Li, X. Zhang, H. Xiang, A. Beheshti, *Federated Anomaly Detection with Isolation Forest for IoT Network Traffics*, IEEE ICPADS 2023, [doi:10.1109/ICPADS60453.2023.00348](https://doi.org/10.1109/ICPADS60453.2023.00348).
+- J. Wen et al., *A survey on federated learning: challenges and applications*, International Journal of Machine Learning and Cybernetics 14, 2023, [doi:10.1007/s13042-022-01647-y](https://doi.org/10.1007/s13042-022-01647-y).
+- E. Dritsas, M. Trigka, *Federated Learning for IoT: A Survey of Techniques, Challenges, and Applications*, Journal of Sensor and Actuator Networks 14, 2025, [doi:10.3390/jsan14010009](https://doi.org/10.3390/jsan14010009).

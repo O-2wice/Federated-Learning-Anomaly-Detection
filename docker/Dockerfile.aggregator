@@ -30,19 +30,14 @@ COPY scripts/dashboard_metrics_updater.py ./scripts/
 # Create models directory
 RUN mkdir -p /app/models/{local,global}
 
-# Set environment variables
+# Set environment variables (database settings come from docker-compose;
+# scripts/config_loader.py supplies local-demo defaults)
 ENV PYTHONUNBUFFERED=1
-# sensible default; docker-compose overrides with all 4 brokers
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka-broker-1:9092
-ENV DB_HOST=timescaledb
-ENV DB_PORT=5432
-ENV DB_NAME=flead
-ENV DB_USER=flead
-ENV DB_PASSWORD=password
 
-# Health check - verify Kafka and DB connectivity
+# Health check - verify DB connectivity using the container's DB settings
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "from kafka import KafkaProducer; import psycopg2; psycopg2.connect(host='timescaledb', user='flead', password='password', database='flead')" || exit 1
+    CMD python -c "import sys; sys.path.insert(0, 'scripts'); import psycopg2; from config_loader import get_db_config; psycopg2.connect(connect_timeout=5, **get_db_config())" || exit 1
 
 # Run aggregator
 CMD ["python", "scripts/04_federated_aggregation.py"]

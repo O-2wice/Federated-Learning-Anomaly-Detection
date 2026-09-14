@@ -18,9 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY monitoring_dashboard/pipeline_monitor.py /app/
 COPY monitoring_dashboard/templates /app/templates
 
-# If other scripts/config are still useful, keep them:
 COPY scripts/ scripts/
-COPY config/ config/
 
 RUN mkdir -p logs
 

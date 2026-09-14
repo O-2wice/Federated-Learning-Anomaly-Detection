@@ -1,0 +1,11 @@
+# Unit tests (run on the host, no Docker needed):
+#   pip install -r requirements/tests.txt
+#   pytest tests
+pytest>=8
+numpy<2.0
+pandas>=2.0
+scipy
+kafka-python>=2.0.2,<3.0
+psycopg2-binary
+rrcf==0.4.4
+setuptools<81   # rrcf imports pkg_resources

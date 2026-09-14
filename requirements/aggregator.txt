@@ -3,7 +3,7 @@ pandas
 scikit-learn
 psycopg2-binary
 sqlalchemy
-kafka-python
+kafka-python>=2.0.2,<3.0
 python-dotenv
 requests
 numexpr

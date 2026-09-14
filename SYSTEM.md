@@ -1,1326 +1,234 @@
-# FLEAD: Federated Learning for IoT Anomaly Detection with Single-Broker Kafka
+# FLEAD System Design
 
----
+FLEAD detects attacks in streams of IoT network traffic without collecting the
+devices' raw data in one place. It combines two detectors:
 
-## SYSTEM OVERVIEW
+- **RRCF anomaly scoring** in Flink: unsupervised, per reading, with no labels needed.
+- **A federated classifier:** each device trains a logistic regression on its
+  own recent labelled readings, and an aggregator combines the parameter
+  updates with differentially private federated averaging.
 
-FLEAD (Federated Learning for Edge Anomaly Detection) is a distributed machine learning system that trains 2,407 IoT devices locally using a single Kafka broker while coordinating globally to improve anomaly detection accuracy. The single-broker configuration is optimized for local testing and development.
+Spark scores every new global model on readings no device trained on.
+TimescaleDB, Grafana and Prometheus make the whole pipeline observable.
 
-### The Problem We're Solving:
+Container layout: [DOCKER_ARCHITECTURE.md](DOCKER_ARCHITECTURE.md). Scripts
+and settings: [scripts/README.md](scripts/README.md). Anomaly detector:
+[docs/RCF_EXPLAINED.md](docs/RCF_EXPLAINED.md).
 
--   Traditional ML: All data to central server, one model (Privacy risk, bandwidth waste)
--   FLEAD: Each device trains locally, only model updates sent, central aggregation
--   Benefits: 93% bandwidth reduction, privacy preserved, real-time detection
+## 1. Data
 
-### System Statistics:
+| Step | What happens | Code |
+| --- | --- | --- |
+| Source | Edge-IIoTset `DNN-EdgeIIoT-dataset.csv`: 1,985,453 labelled network flows after removing duplicates, about 28% attacks (`Attack_label`) | `data_preprocessor.py` |
+| Cleaning | Drops 15 columns that are unique per packet (timestamps, IP and ARP addresses, ports, TCP options, HTTP/TCP/MQTT payloads) and keeps every label-derived column out of the features (`Attack_type` would leak the answer) | `data_preprocessor.py` |
+| Features | 46 features, standardized (zero mean, unit variance); the CSV is processed in 100,000-row chunks to bound memory | `data_preprocessor.py` |
+| Devices | Rows are assigned at random to 2,400 simulated devices (~827 readings each, every device mixing benign and attack traffic), and each device's order is shuffled. Readings get synthetic timestamps one second apart from 2025-01-01. | `convert_chunks_to_device_csvs.py` |
+| Train / held-out | The producer streams each device's first 660 readings (`STREAM_ROWS_PER_DEVICE`). The remaining ~167 per device are never streamed; Spark evaluates on them. | `02_kafka_producer.py`, `05_spark_analytics.py` |
 
--   Devices: 2,407 IoT sensors streaming to single Kafka broker
--   Data Points: Continuous streaming at ~7 messages/second
--   Brokers: Single Kafka broker in KRaft mode (no Zookeeper)
--   Model Versions: Global models created through FedAvg
--   Anomaly Detection: Random Cut Forest (RCF) based
+The stream is a replay of a static dataset. Shuffling removes any temporal
+pattern within a device, so the detectors score each reading on its features,
+not on sequences.
 
----
+## 2. Pipeline
 
-## ARCHITECTURE DIAGRAM
-
-Single-Broker Kafka Configuration:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                 FLEAD FEDERATED LEARNING WITH SINGLE-BROKER KAFKA           │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                     ┌──────────────────────────────┐
-                     │    2407 IoT Devices          │
-                     │  (preprocessed CSV files)    │
-                     └──────────────┬───────────────┘
-                                    │
-                                    ▼
-    ┌──────────────────────────────────────────────────────────────┐
-    │               KAFKA SINGLE-BROKER (KRaft Mode)               │
-    │                                                              │
-    │  Broker 1: Port 9092 (internal), 29092 (external)            │
-    │  Topics: edge-iiot-stream, anomalies, local-model-updates,   │
-    │          global-model-updates                                │
-    └──────────────────────────────┬───────────────────────────────┘
-    │ broker-1:9092                │    │                              │
-    └──────────┬───────────────────┘    └──────────────────────────────┘
-               │
-   Topics: edge-iiot-stream (replicated across the broker)
-           anomalies (Flink detections)
-           local-model-updates (device models)
-           global-model-updates (FedAvg results)
-               │
-    ┌──────────┴──────────┬──────────────┬──────────────┐
-    │                     │              │              │
-    ▼                     ▼              ▼              ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ FLINK        │  │ FLINK        │  │ SPARK        │  │ SPARK        │
-│              │  │              │  │              │  │              │
-│ (JobManager) │  │ (TaskManager)│  │ (Master)     │  │ (Worker)     │
-│              │  │              │  │              │  │              │
-│ Consumes:    │  │ Processes:   │  │ Reads:       │  │ Executes:    │
-│ Kafka        │  │ Streaming    │  │ Kafka        │  │ Batch        │
-│ stream       │  │ data from    │  │ stream       │  │ analytics    │
-│              │  │ the broker   │  │              │  │ on all data  │
-│ Real-time:   │  │              │  │ Batch:       │  │              │
-│ - Z-score    │  │ Per-device   │  │ Hourly       │  │ Distributed  │
-│   anomaly    │  │ local SGD    │  │ - Trends     │  │ computation  │
-│   detection  │  │ training     │  │ - Metrics    │  │ on 2400      │
-│ - Per-broker │  │              │  │ - Analysis   │  │ devices      │
-│   stream     │  │ Output:      │  │              │  │              │
-│              │  │ local-model- │  │ Stream:      │  │ Results to   │
-│ Output to:   │  │ updates      │  │ - Evaluates  │  │ TimescaleDB  │
-│ anomalies    │  │              │  │   global     │  │              │
-│ topic        │  │              │  │   models     │  │              │
-│              │  │              │  │ - Calculates │  │              │
-│              │  │              │  │   accuracy   │  │              │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                 │                 │
-       │                 ▼                 │                 │
-       │          local-model-updates      │                 │
-       │          (device accuracy)        │                 │
-       │                 │                 │                 │
-       │                 ▼                 │                 │
-       │  ┌──────────────────────────────┐ │                 │
-       │  │ FEDERATED AGGREGATION        │ │                 │
-       │  │ (FedAvg from the broker)    │ │                 │
-       │  │                              │ │                 │
-       │  │ Consumes: local-model-       │ │                 │
-       │  │           updates from ALL   │ │                 │
-       │  │           devices across     │ │                 │
-       │  │           single broker          │ │                 │
-       │  │                              │ │                 │
-       │  │ Buffer: 20 device updates    │ │                 │
-       │  │ Aggregate: Weighted average  │ │                 │
-       │  │           (by samples)       │ │                 │
-       │  │ Output: global-model-updates │ │                 │
-       │  │ (v1, v2, v3... v70)          │ │                 │
-       │  └──────────┬───────────────────┘ │                 │
-       │             │                     │                 │
-       │             ▼                     │                 │
-       │    global-model-updates           │                 │
-       │                                   │                 │
-       └───────────┬───────────────────────┴─────────────────┘
-                   │                           │
-                   ▼                           ▼
-    ┌─────────────────────────────────────────────────────────┐
-    │     TIMESCALEDB (Time-Series Database)                  │
-    │     Persistent Storage for All Components               │
-    │                                                         │
-    │  Tables:                                                │
-    │  ├─ local_models (11,247 from all single broker)            │
-    │  │  └─ device_id, model_version, accuracy, samples      │
-    │  │                                                      │
-    │  ├─ federated_models (70+ global versions)              │
-    │  │  └─ global_version, aggregation_round, num_devices   │
-    │  │                                                      │
-    │  ├─ model_evaluations (Spark evaluation results)        │
-    │  │  └─ global_version, prediction_result, accuracy      │
-    │  │                                                      │
-    │  └─ anomalies (Flink RCF detections from the broker)   │
-    │     └─ device_id, value, anomaly_score, severity        │
-    └──────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-                ┌──────────────────────┐
-                │      GRAFANA         │
-                │     Dashboards       │
-                │ (SQL queries to DB)  │
-                │                      │
-                │ Shows:               │
-                │ - 70 global versions │
-                │ - 11K+ local models  │
-                │ - 72.7% accuracy     │
-                │ - Trends across 4    │
-                │   brokers            │
-                │ - Device rankings    │
-                │ - Real-time metrics  │
-                └──────────────────────┘
+```text
+device CSVs ─► producer (150 readings/s, keyed by device) ─► Kafka: edge-iiot-stream
+                                                                 │
+        ┌────────────────────────────┬────────────────────────────┼──────────────────────────┐
+        ▼                            ▼                            ▼                          ▼
+  Flink job (2 slots)          TimescaleDB collector        Spark Structured Streaming   (Kafka UI)
+  • RRCF score per reading     • iot_data                   • 30 s window mean per device
+    ─► anomalies               • anomalies                  • fleet z-score
+  • local logistic regression  • local_model_updates          ─► stream_analysis_results
+    ─► local-model-updates
+        │
+        ▼
+  Federated aggregator ─► global-model-updates, federated_models,
+  (buffered FedAvg + DP)   models_global/global_model_latest.json
+        │                          │
+        │                          ├─► Flink: next local round starts from it
+        │                          └─► Spark: held-out evaluation ─► model_evaluations
+        ▼
+  Model registry + automatic rollback (uses Spark's held-out F1)
 ```
 
-### Key single-broker Features:
+## 3. Components
 
-1. Device Distribution: Each device permanently assigned to one broker (single broker routing)
-2. Data Streams: 4 independent, parallel data streams through single broker
-3. Fault Tolerance: Replication factor 3 means data survives broker failures
-4. Load Balancing: all devices on single broker (equal distribution)
-5. Scalability: Easy to add more brokers for more devices
-6. Consumer Access: All consumers (Flink, Spark, Aggregator) connect to all single broker
-   │ │ │
-   ▼ ▼ ▼
-   ┌────────────────┐ ┌─────────────┐ ┌──────────────────┐
-   │ FLINK │ │ SPARK │ │ SPARK │
-   │ (Local │ │ (Batch │ │ (Stream │
-   │ Training) │ │ Analytics) │ │ Evaluation) │
-   │ │ │ │ │ │
-   │ - Z-score │ │ - Hourly │ │ - Evaluates │
-   │ anomaly │ │ trends │ │ global models │
-   │ detection │ │ - Pattern │ │ - Calculates │
-   │ - SGD local │ │ analysis │ │ real accuracy │
-   │ model │ │ - Metrics │ │ - Stores results │
-   │ training │ │ computation│ │ in DB │
-   │ - Per-device │ └─────────────┘ └──────────────────┘
-   │ v1, v2, v3...│
-   └────────┬───────┘
-   │ local-model-updates
-   │ (device accuracy, loss)
-   ▼
-   ┌─────────────────────────────┐
-   │ FEDERATED AGGREGATION │ ◄─── FedAvg Algorithm
-   │ (Global Model Creation) │ - Takes latest model from each device
-   │ │ - Averages weights
-   │ - FedAvg algorithm │ - Weighted by samples processed
-   │ - Aggregates every 20 │ - Creates new global version
-   │ local updates │ - Broadcasts to devices
-   │ - Creates global models │
-   │ - v1, v2, v3... (70 so far)│
-   └────────┬────────────────────┘
-   │ global-model-updates
-   │
-   ┌────────────┴────────────┐
-   │ │
-   ▼ ▼
-   ┌─────────────────────────────────────────────────────────┐
-   │ TIMESCALEDB (Time-Series Database) │ ◄─── STORAGE
-   │ │
-   │ Tables: │
-   │ ├─ local_models (11,247 records) │
-   │ │ └─ device_id, model_version, accuracy, samples │
-   │ │ │
-   │ ├─ federated_models (70 records) │
-   │ │ └─ global_version, aggregation_round, num_devices │
-   │ │ │
-   │ ├─ model_evaluations (real accuracy from Spark) │
-   │ │ └─ global_version, prediction_result, is_correct │
-   │ │ │
-   │ └─ anomalies (RCF-detected anomalies) │
-   │ └─ device_id, value, anomaly_score, severity │
-   └──────────────────────────┬──────────────────────────────┘
-   │
-   ▼
-   ┌──────────────────────┐
-   │ GRAFANA │ ◄─── VISUALIZATION
-   │ Dashboards │
-   │ │
-   │ Real-time charts: │
-   │ - Model accuracy │
-   │ trend │
-   │ - Device rankings │
-   │ - Training rate │
-   │ │
-   └──────────────────────┘
+### 3.1 Producer
 
-```
-**Training rate :**
-- Shows: "How many new models per minute?"
-- Example: "23 models/minute"
-- Tells you if system is working fast or slow
+`02_kafka_producer.py` streams all devices at once, round-robin, one reading
+per device per turn, at 150 readings/s in total. Messages are keyed by
+`device_id`, so each device's readings stay in order, and stamped with the
+send time. Every send is confirmed through a delivery callback. If Kafka
+confirms nothing for 60 s while readings keep being queued, the producer
+recreates its Kafka client. After the broker lost its session, the old client
+kept expiring every batch without recovering.
 
+### 3.2 Anomaly detection (Flink)
 
----
+Each Flink worker keeps one shared Robust Random Cut Forest (4 trees, 256
+points each) over all 46 features. Each reading's collusive displacement is
+ranked against the last 500 scores, which gives a 0–1 score. Per-device
+thresholds start at 0.4 and adapt toward flagging 5% of readings. Flagged
+readings go to the `anomalies` topic with their score, threshold, severity and
+ground-truth label, so detection precision can be measured.
+Details and measurements: [docs/RCF_EXPLAINED.md](docs/RCF_EXPLAINED.md).
 
-## COMPONENT DEEP DIVE
+### 3.3 Local training (Flink)
 
-### KAFKA: single-broker MESSAGE CLUSTER
+For each device the job keeps its last 200 labelled readings. Once at least
+20 are buffered, it trains after every 30 new readings (about every 8 minutes
+per device; a 15-minute fallback covers slow devices):
 
-**Role:** Central nervous system with single broker - routes data between all components
+- **Model:** logistic regression (attack vs benign) with class-weighted
+  mini-batch SGD. Settings: learning rate 0.2, attack weight 2.5, L2 1e-4,
+  3 epochs, batch size 32.
+- **Start:** each round begins from the latest global model (the file is
+  re-read every 30 s).
+- **Output:** the new parameters, the global version they started from, and
+  the sample count go to `local-model-updates`.
 
-**Architecture: Single-Broker KRaft Cluster**
+The learning rate and class weight were chosen offline (300 devices, 60
+rounds). They raised held-out F1 from 0.67 to 0.75 by lifting attack recall
+from 52% to 70%.
 
-- Broker 1 (Port 9092): devices_0-2399 (single broker)
+### 3.4 Federated aggregation
 
-**What it does:**
+`04_federated_aggregation.py` implements buffered asynchronous FedAvg (as in
+FedBuff). It keeps the latest update of each device and runs a round every
+60 s once at least 200 devices have reported:
 
-- Receives raw IoT sensor data from 2,407 devices (31,000+ msgs/minute distributed across single broker)
-- Routes messages to correct broker based on device_id
-- Buffers data in replicated topics so components can process independently
-- Guarantees no data loss with replication factor 3 (3 brokers hold each message)
-
-**single-broker Benefits:**
-
-1. Fault Tolerance: If one broker fails, 2 backups available
-2. Load Balancing: all devices on single broker (equal distribution)
-3. Scalability: Easy to add more brokers for growth
-4. Realistic Simulation: Matches enterprise IoT deployments
-5. Independent Streams: Each broker processes subset independently
-
-**Data Flow:**
-
+```text
+delta_i  = w_i − w_base(i)          update since the global version device i trained from
+w_global = w_global + A(delta_1..n)
 ```
 
-Device 0-599 → Broker 1 ─┐
-Device 600-1199 → Broker 2 ├─ edge-iiot-stream (replicated)
-Device 1200-1799 → Broker 3 ├─ anomalies topic
-Device 1800-2399 → Broker 4 ─┤─ local-model-updates
-└─ global-model-updates
-│
-┌───────────────┬───────────┼──────────┐
-▼ ▼ ▼ ▼
-Flink consumes from the broker
-Spark consumes from the broker
-Aggregator consumes from the broker
-
-```
-
-**Topics we use:**
-
-| Topic                  | Producer              | Consumers             | Purpose                            | Replication |
-| ---------------------- | --------------------- | --------------------- | ---------------------------------- | ----------- |
-| `edge-iiot-stream`     | Kafka Producer        | Flink, Spark          | Raw sensor data from all devices   | Factor 3    |
-| `anomalies`            | Flink (the broker)   | Storage, Monitoring   | Detected anomalies (Z-score > 2.5) | Factor 3    |
-| `local-model-updates`  | Flink (the broker)   | Federated Aggregation | Local model accuracies per device  | Factor 3    |
-| `global-model-updates` | Federated Aggregation | Spark                 | New global model versions          | Factor 3    |
-
-**Deployment:** Docker containers - 4 Kafka brokers in KRaft mode (no Zookeeper needed)
-
----
-
-### FLINK: REAL-TIME TRAINING
-
-**Role:** Trains 2,407 local models in parallel on streaming data from all single broker
-
-**What it does:**
-
-```
-
-For each IoT device (independently across all single broker):
-
-1. Collects streaming measurements from assigned broker
-2. Calculates statistics (mean, std)
-3. Detects anomalies using Z-score
-4. Every 50 rows OR 60 seconds:
-   → Trains local ML model using Stochastic Gradient Descent (SGD)
-   → Calculates accuracy
-   → Publishes to Kafka via local-model-updates topic
-
-````
-
-**single-broker Processing:**
-
-- JobManager: Connects to all single broker' bootstrap servers
-- TaskManager: Processes stream from all single broker in parallel
-- Each device maintained independently (v1, v2, v3... per device)
-- Models trained at different rates (faster devices create more versions)
-
-**Health:** Flink components depend on all single broker being healthy before starting
-
-```python
-# Random Cut Forest (RCF) anomaly detection
-anomaly_score = rcf_model.score(value)  # 0.0 (normal) to 1.0 (anomaly)
-if anomaly_score > 0.4:
-    send_alert()  # Threshold-based alerting
-````
-
-**The SGD Training Algorithm:**
-
-```python
-# For each training batch:
-for measurement in batch:
-    # 1. PREDICT: What does current model think?
-    prediction = sigmoid(weights · features + bias)
-
-    # 2. MEASURE ERROR: How wrong were we?
-    error = prediction - actual_label
-
-    # 3. CALCULATE GRADIENT: Which direction to fix?
-    gradient = error × features
-
-    # 4. UPDATE WEIGHTS: Step in the right direction
-    weights = weights - (learning_rate × gradient)
-
-    # 5. REPEAT: Next measurement in batch
-```
-
-**Key Parameters:**
-
--   **Learning Rate:** 0.001 (small steps, stable learning)
--   **Batch Size:** 50 measurements
--   **Features:** [value, anomaly_score]
--   **Anomaly Detection:** Random Cut Forest (RCF)
--   **Model Type:** Logistic Regression (binary classifier)
-
-**Example Output:**
-
-```
-Device 127: v3 - Accuracy: 76.43%, Loss: 0.4521, Updates: 180
-Device 256: v2 - Accuracy: 62.89%, Loss: 0.6234, Updates: 120
-Device 1008: v4 - Accuracy: 81.23%, Loss: 0.3891, Updates: 240
-```
-
-**Different versions per device:**
-
--   Device 127 is at model v3 (trained 3 times)
--   Device 256 is at model v2 (trained 2 times)
--   Device 1008 is at model v4 (trained 4 times)
--   ✓ **This is NORMAL!** Devices train at different speeds based on data
-
-**Why SGD?**
-
--   Works on streaming data (doesn't need all data upfront)
--   Updates continuously as new data arrives
--   Computationally light for edge devices
--   Converges quickly with small learning rate
-
-**Deployment:** Apache Flink 1.18 running in Docker container, connected to Kafka at `kafka:29092`
-
----
-
-### FEDERATED AGGREGATION: FEDAVG
-
-**Role:** Creates global model by combining local models from devices
-
-**What it does:**
-
-```
-Step 1: Collect local model updates
-        From Kafka topic: local-model-updates
-
-Step 2: Buffer updates (wait for ~20 updates from different devices)
-
-Step 3: Calculate global accuracy (weighted average)
-        Global Accuracy = Σ(Device_Accuracy × Samples_Processed) / Σ(Samples_Processed)
-
-Step 4: Create new global model version
-        - Increment version counter (v1 → v2 → v3...)
-        - Store in database
-        - Publish new version to Kafka
-
-Step 5: Reset buffer, repeat
-```
-
-**The FedAvg Algorithm:**
-
-```
-Global Model v1: weights = [0.5, 0.3, 0.2]
-
-Local Updates from devices:
-  Device 1: weights = [0.45, 0.35, 0.25], samples = 500
-  Device 5: weights = [0.55, 0.25, 0.20], samples = 400
-  Device 8: weights = [0.48, 0.32, 0.23], samples = 300
-
-Federated Averaging:
-  w_global = (w1×500 + w5×400 + w8×300) / (500 + 400 + 300)
-           = ([0.45×500 + 0.55×400 + 0.48×300] / 1200, ...)
-           = [0.494, 0.323, 0.223]
-
-Global Model v2: weights = [0.494, 0.323, 0.223]  ← NEW VERSION
-```
-
-**Global vs Local Versions:**
-
-| Type       | Example       | Scope         | Purpose                                     |
-| ---------- | ------------- | ------------- | ------------------------------------------- |
-| **LOCAL**  | Device 127 v3 | Single device | That device's personal trained model        |
-| **GLOBAL** | v70           | All devices   | Aggregated knowledge from all 2,407 devices |
-
-**Current Status:**
-
--   70 global models created (v1 through v70)
--   11,247 local models trained total
--   Each global version incorporates models from ~20 devices
-
-**Example Flow:**
-
-```
-Minute 1: Device 42 trains, publishes v1 → Buffer size = 1
-Minute 2: Device 128 trains, publishes v1 → Buffer size = 2
-...
-Minute 20: Device 2010 trains, publishes v1 → Buffer size = 20
-
-         ✓ Buffer full! Trigger aggregation
-
-         → Calculate global v71 from all 20 local updates
-         → Publish to: global-model-updates topic
-         → Clear buffer
-         → Start collecting for v72
-```
-
-**Why FedAvg?**
-
--   **Privacy:** Only model weights sent to server, not raw data
--   **Efficient:** Reduces communication by 99% (vs sending all data)
--   **Decentralized:** Each device trains independently
--   **Proven:** Used by Google, Apple, Meta in production
-
-**Deployment:** Python service using Kafka consumer/producer, runs continuously
-
----
-
-### SPARK: ANALYTICS & EVALUATION (single-broker)
-
-**Role:** Evaluates global models on real data from all single broker
-
-**single-broker Design:**
-
--   Master: Connects to all single broker bootstrap servers
--   Workers: Process data from the broker in parallel
--   Batch Jobs: Read complete dataset across all single broker
--   Stream Evaluation: Test models on data from all devices
-
-**Spark Batch Analytics (hourly):**
-
-```
-Every 1 hour:
-  1. Read all streaming data from Kafka broker
-  2. Analyze patterns and trends across devices
-  3. Calculate statistics (avg, std, anomaly rate)
-  4. Store in TimescaleDB for reporting
-```
-
-**Spark Stream Evaluation (continuous):**
-
-```
-For each global model version (v1, v2, v3... v70):
-  1. Download model weights from TimescaleDB
-  2. Stream new IoT data from all single broker through model
-  3. Get predictions: "Is this anomalous?"
-  4. Compare to actual labels
-  5. Calculate REAL accuracy: ✓ correct / ✗ incorrect (weighted by broker)
-  6. Store results in model_evaluations table
-```
-
-**Health:** Spark components depend on all single broker being healthy before starting
-
-**Example Evaluation:**
-
-```
-Testing Global Model v70 on 1000 new samples:
-
-Sample 1:
-  Actual: "normal" (label=0)
-  Prediction: "normal" (0.23 prob) ✓ CORRECT
-
-Sample 2:
-  Actual: "anomaly" (label=1)
-  Prediction: "normal" (0.34 prob) ✗ WRONG
-
-Sample 3:
-  Actual: "normal" (label=0)
-  Prediction: "anomaly" (0.78 prob) ✗ WRONG
-
-...continuing for 1000 samples...
-
-Result:
-  ✓ Correct: 727 samples
-  ✗ Wrong: 273 samples
-  Real Accuracy: 727/1000 = 72.7%
-```
-
-**Key Metrics Calculated:**
-
--   **True Positives (TP):** Predicted anomaly, actually anomaly ✓
--   **False Positives (FP):** Predicted anomaly, actually normal ✗
--   **True Negatives (TN):** Predicted normal, actually normal ✓
--   **False Negatives (FN):** Predicted normal, actually anomaly ✗
-
-**Derived Metrics:**
-
--   **Accuracy:** (TP + TN) / (TP + TN + FP + FN)
--   **Precision:** TP / (TP + FP)
--   **Recall:** TP / (TP + FN)
--   **F1-Score:** 2 × (Precision × Recall) / (Precision + Recall)
-
-**Why Spark?**
-
--   **Parallel Processing:** Evaluates multiple models simultaneously
--   **Big Data:** Handles gigabytes of data efficiently
--   **Batch + Stream:** Can do historical and real-time analysis
--   **Integration:** Easy connection to Kafka and databases
-
-**Deployment:** Apache Spark 3.5.0, Master + Worker nodes in Docker
-
----
-
-### TIMESCALEDB: STORAGE
-
-**Role:** Time-series database that stores all models and results
-
-**What is TimescaleDB?**
-
--   PostgreSQL extension optimized for time-series data
--   Automatically partitions data by time (hypertables)
--   Super fast queries on time-windowed data
-
-**Tables in our system:**
-
-#### 1. `local_models` (11,247 records)
-
-```sql
-CREATE TABLE local_models (
-    id SERIAL PRIMARY KEY,
-    device_id TEXT NOT NULL,           -- "device_127"
-    model_version INT NOT NULL,         -- 1, 2, 3, 4...
-    global_version INT NOT NULL,        -- Which global version was active
-    accuracy FLOAT NOT NULL,            -- 0.62, 0.78, 0.81
-    samples_processed INT NOT NULL,     -- 500, 400, 600
-    created_at TIMESTAMPTZ NOT NULL     -- 2025-11-07 15:22:31
-);
-```
-
-**Example Row:**
-
-```
-device_127 | v3 | global_v70 | 0.7643 | 500 | 2025-11-07 15:22:31
-```
-
-#### 2. `federated_models` (70 records)
-
-```sql
-CREATE TABLE federated_models (
-    id SERIAL PRIMARY KEY,
-    global_version INT NOT NULL,        -- v1, v2, v3... v70
-    aggregation_round INT NOT NULL,     -- Which round created this
-    num_devices INT NOT NULL,           -- How many devices contributed
-    accuracy FLOAT NOT NULL,            -- 0.727 (weighted average)
-    created_at TIMESTAMPTZ NOT NULL
-);
-```
-
-**Example Row:**
-
-```
-global_v70 | round_70 | 20_devices | 0.727 | 2025-11-07 15:22:24
-```
-
-#### 3. `model_evaluations` (Spark results)
-
-```sql
-CREATE TABLE model_evaluations (
-    id SERIAL PRIMARY KEY,
-    model_version INT NOT NULL,         -- Which model was tested
-    device_id TEXT NOT NULL,            -- Which device evaluated it
-    prediction FLOAT NOT NULL,          -- 0.78 (model's probability)
-    actual_result INT NOT NULL,         -- 0 or 1 (ground truth)
-    is_correct BOOLEAN NOT NULL,        -- true or false
-    confidence FLOAT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-```
-
-**Example Row:**
-
-```
-global_v70 | device_0 | 0.78 | 1 | true | 0.95 | 2025-11-07 15:20:00
-```
-
-#### 4. `anomalies` (Flink detections)
-
-```sql
-CREATE TABLE anomalies (
-    device_id TEXT NOT NULL,
-    value FLOAT NOT NULL,               -- 45.2
-    anomaly_score FLOAT NOT NULL,       -- 0.0-1.0 (RCF score)
-    severity TEXT NOT NULL,             -- "info", "warning", "critical"
-    detection_method TEXT,              -- 'random_cut_forest'
-    timestamp TIMESTAMPTZ NOT NULL
-);
-```
-
-**Query Examples:**
-
-```sql
--- What's the average accuracy per device?
-SELECT device_id, AVG(accuracy) as avg_accuracy, COUNT(*) as models_trained
-FROM local_models
-GROUP BY device_id
-ORDER BY avg_accuracy DESC
-LIMIT 10;
-
--- How many models per global version?
-SELECT global_version, COUNT(*) as num_local_models
-FROM local_models
-GROUP BY global_version
-ORDER BY global_version DESC;
-
--- Latest 5 global models
-SELECT global_version, accuracy, num_devices, created_at
-FROM federated_models
-ORDER BY created_at DESC
-LIMIT 5;
-```
-
-**Why TimescaleDB?**
-
--   **Time-series optimized:** Hypertables compress time data 90%+
--   **SQL power:** Full SQL queries, not limited like NoSQL
--   **Performance:** Queries 10-100x faster than regular PostgreSQL
--   **Retention:** Easy to delete old data with compression policies
-
-**Deployment:** Docker container, stores data in persistent volume
-
----
-
-### GRAFANA: VISUALIZATION
-
-**Role:** Beautiful real-time dashboards for monitoring and analysis
-
-**Grafana Dashboard Panels (8 total):**
-
-#### 1. **Total Local Models** (1,403)
-
--   Shows count of all device models trained
--   Updates every 2 seconds
-
-#### 2. **Global Models Created** (70)
-
--   Count of global versions created through FedAvg
--   Each represents a complete aggregation round
-
-#### 3. **Active Devices (Last Hour)** (970)
-
--   How many devices have sent data in past hour
--   Indicates system health
-
-#### 4. **Latest Global Accuracy** (72.7%)
-
--   Most recent global model's weighted accuracy
--   From federated_models table
-
-#### 5. **Model Training Rate (Per Minute)**
-
--   New models created per minute
--   Shows training speed
-
-#### 6. **Global Model Accuracy Trend**
-
--   Line chart over time
--   Shows how accuracy evolves as we create more versions
-
-#### 7. **Top Devices by Training Count**
-
-```
-device_127   → 560 models trained
-device_256   → 515 models trained
-device_1008  → 540 models trained
-```
-
-#### 8. **Recent Federated Models Table**
-
-| Version | Round | Devices | Accuracy | Created At |
-| ------- | ----- | ------- | -------- | ---------- |
-| 70      | 70    | 20      | 72.7%    | 15:22:31   |
-| 69      | 69    | 19      | 73.9%    | 15:22:24   |
-| 68      | 68    | 20      | 75.6%    | 15:22:09   |
-
-**How Grafana Connects:**
-
-```
-Grafana → TimescaleDB (SQL queries)
-        → Reads: local_models, federated_models, model_evaluations
-        → Plots data automatically
-        → Refreshes every 30 seconds
-```
-
-**Why Grafana?**
-
--   **Real-time:** Updates every 30 seconds automatically
--   **SQL Native:** Query TimescaleDB directly with SQL
--   **Beautiful:** Professional-looking dashboards
--   **Interactive:** Click, zoom, filter data on dashboard
-
-**Deployment:** Docker container at `http://localhost:3001` (admin/admin)
-
----
-
-## DATA FLOW PIPELINE
-
-### Complete End-to-End Journey of One Data Point:
-
-```
-TIME: 2025-11-07 15:22:31.000
-
-STEP 1: GENERATION (IoT Device)
-─────────────────────────────────
-Device 127 measures temperature: 42.5°C
-Sends: {
-  "device_id": "device_127",
-  "data": 42.5,
-  "timestamp": "2025-11-07T15:22:31.000Z"
-}
-
-
-STEP 2: INGESTION (Kafka)
-──────────────────────────
-Message lands in: edge-iiot-stream topic
-Kafka stores it with timestamp
-Partition: device_127 (ensures ordering per device)
-Offset: 45321
-Replicas: 1 broker (can increase for HA)
-
-
-STEP 3: REAL-TIME PROCESSING (Flink - Parallel)
-────────────────────────────────────────────────
-Flink worker receives message
-Updates device_127's statistics:
-  Mean: 42.1°C (running average)
-  Std Dev: 1.8°C (volatility)
-
-Calculates RCF anomaly score: 0.22 (low score = normal)
-Compare to threshold: 0.22 < 0.4 → NORMAL (not anomalous)
-
-Check if model training needed:
-  Samples since last train: 47/50
-  Time since last train: 45/60 seconds
-  → Not yet, keep collecting
-
-Send to Kafka: anomalies topic (EMPTY - no anomaly detected)
-
-
-STEP 4: BATCH TRAINING (Flink - After 50 samples or 60 sec)
-──────────────────────────────────────────────────────────
-[Time: 15:23:31 - 60 seconds later]
-
-Flink has collected 50 measurements for device_127
-Prepares training data:
-  X_train = [
-    [42.1, 0.22],        # Features: [value, anomaly_score]
-    [41.9, 0.15],
-    [42.3, 0.18],
-    ... (47 more)
-  ]
-  y_train = [0, 0, 0, 1, 0, ...]  # Labels: 1=anomaly, 0=normal
-
-Trains SGD model:
-  Iteration 1: Update weights based on sample 1
-  Iteration 2: Update weights based on sample 2
-  ...
-  Iteration 50: Final weight update
-
-  Loss after training: 0.4521
-  Accuracy on training data: 76.43%
-
-Increments version: device_127 v2 → v3
-
-Publishes to Kafka: local-model-updates
-{
-  "device_id": "device_127",
-  "model_version": 3,
-  "accuracy": 0.7643,
-  "loss": 0.4521,
-  "samples_processed": 50,
-  "timestamp": "2025-11-07T15:23:31.000Z"
-}
-
-
-STEP 5: FEDERATED AGGREGATION (Flink Runner - Every 20 Updates)
-───────────────────────────────────────────────────────────────
-Federated Aggregation service reads from: local-model-updates
-
-Buffers updates:
-  Device 127 v3 (0.7643 accuracy, 50 samples)
-  Device 256 v2 (0.6289 accuracy, 40 samples)
-  Device 1008 v4 (0.8123 accuracy, 60 samples)
-  ... (17 more devices)
-
-[After 20 devices → Trigger aggregation]
-
-Calculate global accuracy:
-  weighted_acc = (0.7643×50 + 0.6289×40 + 0.8123×60 + ...) / (50+40+60+...)
-               = 0.727 (72.7%)
-
-Create new global model v71:
-  weights = average of all 20 device weights
-  version = 71
-  accuracy = 0.727
-  num_devices = 20
-  timestamp = 2025-11-07T15:24:00
-
-Save to database: INSERT INTO federated_models (...)
-
-Publish to Kafka: global-model-updates
-{
-  "version": 71,
-  "aggregation_round": 71,
-  "global_accuracy": 0.727,
-  "num_devices": 20,
-  "timestamp": "2025-11-07T15:24:00Z"
-}
-
-
-STEP 6: STORAGE (TimescaleDB)
-──────────────────────────────
-Local model stored:
-  INSERT INTO local_models
-    (device_id, model_version, global_version, accuracy, samples_processed, created_at)
-  VALUES ('device_127', 3, 71, 0.7643, 50, NOW())
-
-Global model stored:
-  INSERT INTO federated_models
-    (global_version, aggregation_round, num_devices, accuracy, created_at)
-  VALUES (71, 71, 20, 0.727, NOW())
-
-Hypertable partitions by time (hourly):
-  local_models_2025_11_07_15
-  federated_models_2025_11_07_15
-
-
-STEP 7: BATCH EVALUATION (Spark - Every hour)
-───────────────────────────────────────────────
-Spark reads global_v71 from federated_models
-Downloads weights from storage
-Streams IoT data through model
-
-For each test sample:
-  Input: [value=42.1, anomaly_score=0.22]
-  Sigmoid output: 0.35
-  Prediction: NORMAL (< 0.5)
-  Actual label: 0 (NORMAL)
-  Result: CORRECT ✓
-
-Repeat for 1000 samples...
-Collect: 727 correct, 273 wrong
-Real Accuracy: 72.7%
-
-Store in database:
-  INSERT INTO model_evaluations
-    (model_version, prediction, actual_result, is_correct, ...)
-
-
-STEP 8: VISUALIZATION (Grafana)
-────────────────────────────────
-Grafana dashboard queries TimescaleDB every 30 seconds:
-
-SELECT accuracy FROM federated_models ORDER BY created_at DESC LIMIT 1
-→ Returns: 0.727
-
-SELECT COUNT(*) FROM local_models WHERE created_at > NOW() - INTERVAL '1 hour'
-→ Returns: 1403 (total local models)
-
-SELECT * FROM federated_models ORDER BY created_at DESC LIMIT 10
-→ Displays table of last 10 global versions
-
-SELECT AVG(accuracy) FROM local_models
-GROUP BY device_id
-ORDER BY AVG(accuracy) DESC LIMIT 10
-→ Shows top 10 devices by accuracy
-
-Dashboard updates:
-  ✓ Latest Global Accuracy: 72.7%
-  ✓ Total Local Models: 1,403
-  ✓ Global Models: 71
-  ✓ Training Rate: 23.4 models/minute
-  ✓ Accuracy Trend: Line chart shows 72% → 73% → 74% → ... → 72.7%
-
-USER VIEWS: Beautiful real-time dashboard
-```
-
----
-
-## HOW COMPONENTS LINK TOGETHER
-
-### Data Flow Architecture:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     SYSTEM INTEGRATION POINTS                    │
-└─────────────────────────────────────────────────────────────────┘
-
-SYNCHRONIZATION:
-───────────────
-All components use ISO 8601 timestamps (UTC) for synchronization:
-  Format: 2025-11-07T15:22:31.000Z
-  Ensures: No timing conflicts, reproducible results
-
-KAFKA (Hub):
-─────────────
-Topic: edge-iiot-stream
-  ├─ Source: IoT Devices (2,407)
-  ├─ Consumers: Flink (real-time), Spark (batch)
-  └─ Purpose: Raw data distribution
-
-Topic: anomalies
-  ├─ Source: Flink (anomaly detection)
-  ├─ Consumers: TimescaleDB (storage), Monitoring
-  └─ Purpose: Alert on detected anomalies
-
-Topic: local-model-updates
-  ├─ Source: Flink (after training)
-  ├─ Consumers: Federated Aggregation, TimescaleDB
-  └─ Purpose: Device accuracy reporting
-
-Topic: global-model-updates
-  ├─ Source: Federated Aggregation (FedAvg)
-  ├─ Consumers: Flink, TimescaleDB
-  └─ Purpose: Broadcast new global versions
-
-
-FLINK → KAFKA → AGGREGATION:
-─────────────────────────────
-Flink trains device models
-            ↓
-Publishes accuracy to: local-model-updates
-            ↓
-Federated Aggregation consumes
-            ↓
-Calculates weighted average
-            ↓
-Publishes new global model to: global-model-updates
-            ↓
-Stored in TimescaleDB
-
-
-SPARK → TIMESCALEDB:
-────────────────────
-Spark reads global model from database
-            ↓
-Evaluates on real test data
-            ↓
-Calculates accuracy metrics
-            ↓
-Stores results in model_evaluations table
-            ↓
-Grafana queries results
-
-
-TIMESCALEDB ← ALL COMPONENTS:
-─────────────────────────────
-Flink → Stores local_models
-Aggregation → Stores federated_models
-Spark → Stores model_evaluations
-            ↓
-TimescaleDB organizes by time
-            ↓
-Grafana queries with SQL
-
-
-GRAFANA QUERIES:
-────────────────
-Dashboard.Panel_1 (Latest Accuracy):
-  SELECT accuracy FROM federated_models
-  ORDER BY created_at DESC LIMIT 1
-  ↓ Returns: 72.7%
-
-Dashboard.Panel_2 (Model Count):
-  SELECT COUNT(*) FROM local_models
-  ↓ Returns: 1,403
-
-Dashboard.Panel_3 (Trend Chart):
-  SELECT created_at, accuracy FROM federated_models
-  ORDER BY created_at DESC LIMIT 100
-  ↓ Returns: Time series for line chart
-
-Dashboard.Panel_4 (Top Devices):
-  SELECT device_id, AVG(accuracy), COUNT(*) as models_trained
-  FROM local_models
-  GROUP BY device_id
-  ORDER BY models_trained DESC LIMIT 10
-  ↓ Returns: Device ranking table
-```
-
-### Dependency Order (What must start first):
-
-```
-1. TIMESCALEDB (Database must exist first)
-   └─ Creates tables for storing everything
-
-2. KAFKA (Message hub must be ready)
-   └─ Receives data from all sources
-
-3. FLINK (Processes incoming data)
-   └─ Consumes from: edge-iiot-stream
-   └─ Produces to: anomalies, local-model-updates
-
-4. FEDERATED AGGREGATION (Needs Flink models)
-   └─ Consumes from: local-model-updates
-   └─ Produces to: global-model-updates
-
-5. SPARK (Evaluates completed models)
-   └─ Reads from: federated_models (TimescaleDB)
-   └─ Writes to: model_evaluations (TimescaleDB)
-
-6. GRAFANA (Visualizes results)
-   └─ Connects to: TimescaleDB
-   └─ Queries: All tables
-   └─ Displays: Real-time dashboards
-```
-
----
-
-## KEY ALGORITHMS
-
-### 1. Z-Score Anomaly Detection (Flink)
-
-**What it does:** Detects unusual measurements compared to device's history
-
-**Formula:**
-
-```
-Z-score = (current_value - mean) / standard_deviation
-```
-
-**Example:**
-
-```
-Device 127 history: [42.1, 42.3, 41.9, 42.0, 42.2]
-Mean: 42.1°C
-Std Dev: 0.15°C
-
-New measurement: 45.0°C
-Z-score = (45.0 - 42.1) / 0.15 = 19.3
-
-Threshold: 2.5
-19.3 > 2.5 → ANOMALY DETECTED! (Critical)
-```
-
-**Interpretation:**
-
--   Z-score = 1.0: 1 std dev away (normal)
--   Z-score = 2.5: 2.5 std dev away (anomalous)
--   Z-score = 3.0: Very unusual (critical)
-
----
-
-### 2. Stochastic Gradient Descent (Flink)
-
-**What it does:** Learns to predict anomalies from historical data
-
-**Algorithm:**
-
-```
-Initialize: weights = [0.0, 0.0, 0.0], bias = 0.0
-
-For each training epoch:
-  For each sample in batch:
-    1. Prediction = sigmoid(weights · features + bias)
-    2. Loss = -label × log(prediction) - (1-label) × log(1-prediction)
-    3. Gradient = (prediction - label) × features
-    4. weights = weights - learning_rate × gradient
-    5. bias = bias - learning_rate × (prediction - label)
-
-Result: Model that predicts P(anomaly | features)
-```
-
-**Why it works:**
-
--   Learns from streaming data (one sample at a time)
--   Adapts to device-specific patterns
--   Lightweight (only 4 parameters: 3 weights + 1 bias)
--   Interpretable (can see which features matter)
-
----
-
-### 3. Federated Averaging - FedAvg (Aggregation Service)
-
-**What it does:** Combines models from multiple devices into one global model
-
-**Algorithm:**
-
-```
-Global Model v1 → weights_global = [0.5, 0.3, 0.2]
-
-Devices send updates:
-  Device 1: weights_1 = [0.45, 0.35, 0.25], n_samples_1 = 500
-  Device 2: weights_2 = [0.55, 0.25, 0.20], n_samples_2 = 400
-  Device 3: weights_3 = [0.48, 0.32, 0.23], n_samples_3 = 300
-
-Calculate weighted average:
-  weights_global = (weights_1 × n_1 + weights_2 × n_2 + weights_3 × n_3)
-                   / (n_1 + n_2 + n_3)
-                 = ([0.45, 0.35, 0.25] × 500 + [0.55, 0.25, 0.20] × 400 + [0.48, 0.32, 0.23] × 300)
-                   / 1200
-                 = [0.494, 0.323, 0.223]
-
-Global Model v2 → weights_global = [0.494, 0.323, 0.223]
-```
-
-**Why weighting by samples:**
-
--   Devices with more data should influence more
--   Device 1 (500 samples) has 2.5x influence of Device 3 (200 samples)
--   Fair representation across different-sized datasets
-
----
-
-### 4. Model Evaluation (Spark)
-
-**What it does:** Tests how accurate our model really is on new data
-
-**Metrics:**
-
-```
-For 1000 test samples:
-
-True Positives (TP): 600 (predicted anomaly, was anomaly) ✓
-False Positives (FP): 50 (predicted anomaly, was normal) ✗
-True Negatives (TN): 320 (predicted normal, was normal) ✓
-False Negatives (FN): 30 (predicted normal, was anomaly) ✗
-
-Accuracy = (TP + TN) / All = (600 + 320) / 1000 = 92.0%
-Precision = TP / (TP + FP) = 600 / 650 = 92.3% (when we say anomaly, how often right?)
-Recall = TP / (TP + FN) = 600 / 630 = 95.2% (of real anomalies, how many did we catch?)
-F1 = 2×(Precision×Recall)/(Precision+Recall) = 93.7% (balanced metric)
-```
-
-**Why multiple metrics:**
-
--   **Accuracy:** Overall correctness (can be misleading if imbalanced)
--   **Precision:** Avoid false alarms (don't bother users with false alerts)
--   **Recall:** Catch real problems (don't miss actual anomalies)
--   **F1:** Balance both (harmonic mean)
-
----
-
-## PERFORMANCE METRICS
-
-### System Throughput
-
-| Metric                 | Value  | Unit        |
-| ---------------------- | ------ | ----------- |
-| Message Ingestion Rate | 31,482 | msgs/minute |
-| Local Models Created   | 11,247 | total       |
-| Global Models Created  | 70     | total       |
-| Average Training Time  | 2-5    | seconds     |
-| Model Inference Time   | <1     | millisecond |
-
-### Accuracy Evolution
-
-```
-Training Progress:
-┌─────────────────────────────────────────────┐
-│ 90% │                                       │
-│ 80% │                    ╱╲                 │
-│ 70% │            ╱╲      ╱  ╲               │
-│ 60% │    ╱╲      ╱  ╲    ╱    ╲     ╱╲     │
-│ 50% │────────────────────────────╲───  ╲───│
-│     └─────────────────────────────────────┘
-│       v1  v10  v20  v30  v40  v50  v60  v70│
-│       Global Model Versions                │
-```
-
-Observations:
-
--   v1-v10: Rapid improvement (devices learning)
--   v10-v40: Steady improvement (global model refining)
--   v40-v70: Stabilizing around 72-73% (convergence)
--   Some oscillations: Normal (different device batches contribute)
-
-### Storage Efficiency
-
-| Table             | Records | Size   | Growth Rate |
-| ----------------- | ------- | ------ | ----------- |
-| local_models      | 11,247  | ~5 MB  | ~50/min     |
-| federated_models  | 70      | ~50 KB | ~0.5/hour   |
-| model_evaluations | ~70,000 | ~30 MB | ~1000/hour  |
-| anomalies         | ~30,000 | ~15 MB | ~500/min    |
-
-**Compression by TimescaleDB:** ~90% reduction through hypertables
-
-### Network Bandwidth Saved
-
-**Traditional Approach:** Send all data to server
-
-```
-2,407 devices × 30 samples/minute × 100 bytes/sample
-= 7.2 MB/minute upstream
-```
-
-**Federated Learning Approach:** Send only model updates
-
-```
-2,407 devices × 1 model update/minute × 200 bytes/update
-= 0.48 MB/minute upstream
-= 93% bandwidth reduction!
-```
-
-### Cost Savings (Estimated)
-
-| Component   | Bandwidth | Compute | Storage   |
-| ----------- | --------- | ------- | --------- |
-| Traditional | $7.2/min  | High    | Very High |
-| FLEAD       | $0.48/min | Low     | Medium    |
-| **Savings** | **93%**   | **80%** | **50%**   |
-
----
-
-## SUMMARY: THE COMPLETE PICTURE
-
-**FLEAD brings together 6 technologies in perfect harmony:**
-
-1. **Kafka** = Nervous system (routes messages)
-2. **Flink** = Local brains (2,407 independent learners)
-3. **FedAvg** = Collective intelligence (combines local knowledge)
-4. **Spark** = Auditor (validates results)
-5. **TimescaleDB** = Memory (stores everything)
-6. **Grafana** = Eyes (visualizes progress)
-
-**Data Journey:**
-
-```
-IoT Device
-    ↓ (raw data)
-Kafka
-    ↓ (distributes)
-Flink (trains locally)
-    ↓ (model updates)
-Federated Aggregation (FedAvg)
-    ↓ (new global version)
-TimescaleDB (stores)
-    ↓ (queries)
-Spark (evaluates)
-    ↓ (writes results)
-TimescaleDB (stores again)
-    ↓ (queries)
-Grafana (visualizes)
-    ↓
-**YOU SEE: Beautiful dashboard with 72.7% accuracy**
-```
-
-**Why this architecture?**
-
--   **Privacy:** Raw data never leaves devices
--   **Efficiency:** 93% less bandwidth
--   **Scalability:** Adds device = adds computation (not bottleneck)
--   **Resilience:** Device failure doesn't crash system
--   **Flexibility:** Easy to add new components
--   **Real-time:** Streaming + batch analysis
--   **Interpretability:** Can track every model version
-
-**Key Achievement:**
-
-> Successfully deployed federated learning on 2,407 IoT devices, achieving 72.7% anomaly detection accuracy while maintaining privacy and reducing bandwidth by 93%.
-
----
-
-## QUICK REFERENCE TABLE
-
-| Component       | Technology        | Role              | Input          | Output          |
-| --------------- | ----------------- | ----------------- | -------------- | --------------- |
-| **Source**      | IoT Sensors       | Data generation   | -              | Raw values      |
-| **Kafka**       | Message Broker    | Data distribution | Raw data       | Topics          |
-| **Flink**       | Stream Processing | Local training    | Topic msgs     | Model updates   |
-| **FedAvg**      | Aggregation       | Global model      | Local updates  | Global model    |
-| **Spark**       | Analytics         | Model evaluation  | Global models  | Accuracy scores |
-| **TimescaleDB** | Time-series DB    | Data storage      | All components | SQL queries     |
-| **Grafana**     | Visualization     | Dashboard         | SQL queries    | Live dashboard  |
-
----
-
-## FOR YOUR DEFENSE
-
-**Opening Statement:**
-
-> "FLEAD is a federated learning system that trains machine learning models on 2,407 IoT devices without sending raw data to a central server. Each device learns locally using Stochastic Gradient Descent, devices share only model updates via Kafka, and a Federated Aggregation service combines them into a global model achieving 72.7% anomaly detection accuracy."
-
-**When asked "How do components connect?":**
-
-> "Kafka acts as the central message hub. Flink consumes raw data, trains local models per device, and publishes model updates. Federated Aggregation reads these updates and uses FedAvg to create a global model. Spark evaluates the global model on real data, Spark results go to TimescaleDB, and Grafana visualizes everything with SQL queries."
-
-**When asked "Why Kafka?":**
-
-> "Kafka decouples components so they can run independently. If Flink slows down, Kafka buffers data. If Aggregation crashes, Kafka has persistent data. It's the nervous system that keeps everything coordinated."
-
-**When asked "What's special about FedAvg?":**
-
-> "FedAvg weights each device's contribution by the number of samples it processed. This is fairer than simple averaging - a device with 500 samples influences more than one with 50 samples. Plus, it's privacy-preserving - we never touch raw data."
-
-**When asked "How do you know it works?":**
-
-> "Spark continuously evaluates our global models on real test data and calculates true accuracy metrics. We store 70+ model versions in TimescaleDB and can see accuracy improving from 65% to 72.7% across versions."
-
----
-
-**Good luck with your defense! You've built something genuinely impressive.** 🚀
-
-
+`A` is the sample-weighted mean. With differential privacy on (the default),
+it becomes DP-FedAvg (McMahan et al., 2018):
+
+- clip each `delta_i` to L2 norm C = 1;
+- average the clipped updates;
+- add Gaussian noise with standard deviation σ·C / n, where σ = 5.
+
+The cumulative (ε, δ = 1e-5) budget comes from a Rényi-DP accountant for the
+Gaussian mechanism, composed over rounds. It ignores subsampling
+amplification, so it is conservative. Noise is added by the aggregator, which
+the design therefore trusts.
+
+The 200-device minimum matters. With 40 devices per round (noise std 0.125),
+an offline run left the model at the always-benign baseline (F1 0.58, against
+0.73 without DP). Live, a round runs every minute with about 300 devices
+(each device retrains every 30 readings, staggered), so the noise std is
+about 0.017.
+
+Every round also records:
+
+- **Update clustering:** devices are grouped by cosine similarity of their
+  updates (≥ 0.5); the number of groups of 3 or more devices and the mean
+  agreement with the consensus direction show whether devices learn the same
+  thing.
+- **Model registry:** the last 10 global versions (JSON, no pickles). Spark's
+  held-out F1 decides the best version. If a newer evaluated version's F1 is
+  more than 0.10 below the best, the aggregator republishes the best
+  parameters as a new version (once per degraded version).
+- **TimescaleDB `federated_models`:** devices, samples, update norm,
+  agreement, clusters, DP noise, clipped updates, ε.
+
+### 3.5 Analytics and evaluation (Spark)
+
+`05_spark_analytics.py` runs three parts on the Spark cluster:
+
+1. **Held-out evaluation.** A fixed 5% sample of the unseen rows (about 20,000
+   readings) is cached. Every 120 s the job checks for a new global version and
+   scores it with a confusion matrix, per device and overall (`device_id =
+   'ALL'`): accuracy, precision, recall, F1 and the four counts. The
+   always-benign baseline is `(TN + FP) / n`.
+2. **Stream analysis.** Each device's mean reading over 30-second event-time
+   windows (1-minute watermark) is compared with the fleet in the same window:
+   `z = (device_mean − fleet_mean) / fleet_std`, flagged when |z| > 3 and at
+   least 10 devices report. It complements RRCF: a device out of line with the
+   fleet at one moment.
+3. **Batch statistics.** Daily mean, standard deviation, min and max of the
+   stream metric per device, from the CSVs.
+
+### 3.6 Storage (TimescaleDB)
+
+| Table | Written by | Contents |
+| --- | --- | --- |
+| `iot_data` | collector | Every streamed reading |
+| `anomalies` | collector (from Flink) | Flagged readings with score, threshold, severity, label |
+| `local_model_updates` | collector | Raw local model messages |
+| `local_models` | aggregator | One row per received local update |
+| `federated_models` | aggregator | One row per global version, with DP and clustering statistics |
+| `model_evaluations` | Spark | Held-out metrics per version (overall and per device) |
+| `stream_analysis_results` | Spark | Fleet z-score per device window |
+| `batch_analysis_results` | Spark | Daily statistics per device |
+| `dashboard_metrics` | metrics updater, Spark | Fleet KPI snapshots every 15 s; held-out accuracy and F1 after each evaluation |
+
+All tables are hypertables. `00_init_database.py` recreates them on every start.
+
+### 3.7 Observability
+
+- **Grafana** (5 dashboards, generated by `grafana/build_dashboards.py`):
+  Overview, Federated Learning & Privacy, Anomalies, Devices and Operations.
+  Model panels show held-out metrics next to the always-benign baseline;
+  Operations combines TimescaleDB freshness with Prometheus throughput, lag,
+  JVM memory and alert states. The build rules (one data source uid each, no
+  unbounded queries on the large tables) are unit tested.
+- **Device viewer** (port 8082): each device's file, streamed / held-out split
+  and attack share, next to its stored readings, anomalies, local models and
+  held-out evaluation.
+- **Metrics updater:** computes the expensive fleet aggregates once every 15 s
+  (row totals, active and stale devices, anomaly rate, attack share). The
+  monitoring page and the Prometheus exporter read that snapshot instead of
+  scanning the large tables on every refresh.
+- **Monitor** (port 5001): one page that answers "is it working and how
+  well": an overall verdict with its reasons, the freshness of each stage,
+  held-out accuracy and F1 against the baseline, the share of flagged
+  readings that are attacks, the privacy budget, Flink's lag, recent rounds,
+  firing alerts and links to every interface. It reads one cached
+  `/api/overview` call built from bounded queries, Prometheus and the Flink
+  REST API; it also serves `/metrics` for Prometheus and the Alertmanager
+  webhook.
+- **Prometheus + Alertmanager:** scrape the pipeline, Flink and Spark, and
+  evaluate 16 rules. The rules cover the model below baseline or F1 under 0.5,
+  no new global models, low training rate, ε above 50, high anomaly rate,
+  stale devices, database errors, a stale KPI snapshot, targets down, Flink
+  restarts, heap and falling behind the stream, and lost Spark workers.
+
+## 4. Measured results
+
+**Offline** (the same code, without Docker):
+
+| Experiment | Result |
+| --- | --- |
+| RRCF, 4 × 256, two samples of 60 devices | ROC AUC 0.65 / 0.66; 81–86% of flagged readings are attacks (28% base rate) |
+| Full per-reading path, 60 devices × 660 readings | 5.8% flagged, 64.5% of them attacks; global model accuracy 0.856, F1 0.73 without DP (baseline 0.723) |
+| DP with 40 devices per round | accuracy 0.733, F1 0.58: noise dominates, hence the 200-device minimum |
+
+**Live run** (14 Sep 2026, 77 minutes):
+
+| Metric | Value |
+| --- | --- |
+| Devices per round | Median 307 (200–502), 69 rounds |
+| Held-out accuracy / F1 | 0.770 / 0.553 at v1, 0.858 / 0.739 at v68 (precision 0.777, recall 0.704 on 19,981 readings; always-benign baseline 0.714) |
+| Anomalies flagged | 5.8% of readings; 74% of them attacks |
+| Privacy budget | ε = 9.35 after 69 rounds (δ = 1e-5); median noise std 0.016 |
+| Flink throughput | Median 150 readings/s, the full stream rate. The earlier ~3-reading training trigger held Flink at ~105/s |
+| Producer delivery | 694,999 of 695,000 confirmed, 0 failed |
+
+## 5. Limitations
+
+- **One broker, replication factor 1:** no fault tolerance. The design targets
+  a single machine; [docs/KAFKA_SINGLE_BROKER.md](docs/KAFKA_SINGLE_BROKER.md)
+  describes scaling out.
+- **Linear model:** logistic regression limits accuracy. The federated
+  mechanics (buffered deltas, DP, registry) do not depend on the model.
+- **RRCF on its own:** it ranks readings usefully (AUC 0.66) but does not
+  separate attacks; it is the label-free signal next to the classifier.
+- **Privacy guarantee:** DP protects individual updates from anyone who sees
+  the global models, not from the aggregator; the accountant is conservative.
+- **Simulated fleet:** devices are random partitions of one dataset with
+  shuffled order, so there is little real heterogeneity or temporal structure.
+- **Lost readings:** when the producer replaces a stalled Kafka client, the
+  readings that client had not delivered are dropped.

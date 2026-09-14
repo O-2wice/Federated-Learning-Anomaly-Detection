@@ -1,0 +1,14 @@
+project:
+  title: "FLEAD case study"
+  output-dir: _site
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    toc-title: "On this page"
+    toc-depth: 2
+    lightbox: true
+    fig-align: center
+    link-external-newwindow: true

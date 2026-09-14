@@ -18,29 +18,20 @@ echo
 echo "Stopping all services..."
 echo
 
-# Force kill all running containers
-echo "Killing running containers..."
-docker kill $(docker ps -q) 2>/dev/null || true
-echo "Done."
-
-# Force remove all containers
-echo "Removing all containers..."
-docker rm -f $(docker ps -aq) 2>/dev/null || true
-echo "Done."
-
-# Docker compose cleanup
-echo "Running docker compose cleanup..."
+# Stop and remove ONLY this project's containers. Data volumes (TimescaleDB,
+# Kafka, Grafana, models) are kept for the next ./start.
+# The previous version killed every container on the machine and pruned every
+# unused Docker volume, wiping other apps' data.
+echo "Stopping FLEAD containers..."
 if docker compose version >/dev/null 2>&1; then
-  docker compose down -v --remove-orphans 2>/dev/null || true
+  docker compose --profile data down --remove-orphans || true
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose down -v --remove-orphans 2>/dev/null || true
+  docker-compose --profile data down --remove-orphans || true
 fi
 echo "Done."
 
-# Prune volumes
-echo "Pruning unused volumes..."
-docker volume prune -f 2>/dev/null || true
-echo "Done."
+# Containers from older runs that may not be tracked by compose
+docker container rm -f data-preprocessor jupyter-dev 2>/dev/null || true
 echo
 
 echo "==================================================="

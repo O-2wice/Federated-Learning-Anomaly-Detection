@@ -3,1197 +3,814 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FLEAD Pipeline Monitor - Live Status</title>
+    <title>FLEAD Monitor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M7 21l5-7 5 5 8-10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <script>
+        // Apply the saved theme before first paint (no flash)
+        (function () {
+            let theme = null;
+            try { theme = localStorage.getItem("flead-theme"); } catch (e) {}
+            if (!theme) theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+            document.documentElement.dataset.theme = theme;
+        })();
+    </script>
     <style>
         :root {
-            --bg: #f3f4f6;
-            --bg-elevated: #ffffff;
-            --bg-elevated-soft: #f9fafb;
-            --border-subtle: #e5e7eb;
+            --bg: #f4f6fa;
+            --panel: #ffffff;
+            --panel-soft: #f7f9fc;
+            --border: #e2e7ef;
+            --text: #0f172a;
+            --muted: #5b6678;
+            --faint: #94a3b8;
             --accent: #2563eb;
-            --accent-soft: #dbeafe;
-            --accent-strong: #1d4ed8;
-            --text-main: #111827;
-            --text-muted: #6b7280;
-            --badge-healthy: #16a34a;
-            --badge-running: #2563eb;
-            --badge-stopped: #ef4444;
-            --badge-degraded: #f97316;
-            --badge-unknown: #f59e0b;
-            --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.14);
-            --card-radius: 18px;
+            --ok: #15803d;
+            --ok-soft: #dcfce7;
+            --warn: #b45309;
+            --warn-soft: #fef3c7;
+            --bad: #b91c1c;
+            --bad-soft: #fee2e2;
+            --idle: #64748b;
+            --idle-soft: #e8edf4;
+            --chart-1: #2563eb;
+            --chart-2: #0d9488;
+            --chart-3: #94a3b8;
+            --chart-4: #c2410c;
+            --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 20px rgba(15, 23, 42, 0.05);
+            --radius: 14px;
+            color-scheme: light;
         }
 
-        body.dark-mode {
-            --bg: #020617;
-            --bg-elevated: #0b1220;
-            --bg-elevated-soft: #020617;
-            --border-subtle: #1f2937;
-            --accent: #60a5fa;
-            --accent-soft: #0b1120;
-            --accent-strong: #3b82f6;
-            --text-main: #e5e7eb;
-            --text-muted: #9ca3af;
-            --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.9);
+        :root[data-theme="dark"] {
+            --bg: #0a0f1d;
+            --panel: #111a2d;
+            --panel-soft: #0e1627;
+            --border: #213050;
+            --text: #e6ebf5;
+            --muted: #9aa6bd;
+            --faint: #5d6b86;
+            --accent: #6ea0ff;
+            --ok: #4ade80;
+            --ok-soft: #0f2e1c;
+            --warn: #fbbf24;
+            --warn-soft: #33260a;
+            --bad: #f87171;
+            --bad-soft: #3a1515;
+            --idle: #94a3b8;
+            --idle-soft: #1c2740;
+            --chart-1: #6ea0ff;
+            --chart-2: #2dd4bf;
+            --chart-3: #64748b;
+            --chart-4: #fb923c;
+            --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+            color-scheme: dark;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-                sans-serif;
-            background: radial-gradient(circle at top left, #e5edff 0, var(--bg) 45%);
-            color: var(--text-main);
-            padding: 24px;
-            min-height: 100vh;
-            transition: background 0.3s ease, color 0.3s ease;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.45;
+            padding: 20px 24px 40px;
         }
 
-        body.dark-mode {
-            background: radial-gradient(circle at top left, #0b1120 0, #020617 40%);
-        }
+        a { color: var(--accent); }
+        button, select { font: inherit; color: inherit; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-        .container {
-            max-width: 1600px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1480px; margin: 0 auto; }
 
+        /* Header */
         header {
             display: flex;
+            flex-wrap: wrap;
+            gap: 12px 24px;
+            align-items: center;
             justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 18px;
-        }
-
-        .title-block h1 {
-            font-size: 2.4rem;
-            letter-spacing: 0.03em;
-            margin-bottom: 4px;
-        }
-
-        .subtitle {
-            font-size: 0.95rem;
-            color: var(--text-muted);
-        }
-
-        .top-controls {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            font-size: 0.85rem;
-            color: var(--text-muted);
-        }
-
-        .pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            background: rgba(148, 163, 184, 0.1);
-            border: 1px solid rgba(148, 163, 184, 0.25);
-        }
-
-        .pill code {
-            font-size: 0.85em;
-        }
-
-        select.refresh-select {
-            border: none;
-            background: transparent;
-            font-size: 0.85rem;
-            color: inherit;
-            outline: none;
-            cursor: pointer;
-        }
-
-        .toggle {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px;
-            border-radius: 999px;
-            background: rgba(148, 163, 184, 0.18);
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            cursor: pointer;
-            font-size: 0.8rem;
-        }
-
-        .toggle-knob {
-            width: 18px;
-            height: 18px;
-            border-radius: 999px;
-            background: #f9fafb;
-            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.5);
-            transform: translateX(0);
-            transition: transform 0.2s ease, background 0.2s ease;
-        }
-
-        body.dark-mode .toggle-knob {
-            transform: translateX(18px);
-            background: #0f172a;
-        }
-
-        .toggle-label {
-            padding: 0 6px;
-        }
-
-        .button-ghost {
-            border-radius: 999px;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.02);
-            padding: 6px 12px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            color: var(--text-muted);
-        }
-
-        .button-ghost:hover {
-            border-color: var(--accent);
-            color: var(--accent-strong);
-        }
-
-        /* Pipeline flow */
-
-        .pipeline-flow-wrapper {
-            background: var(--bg-elevated);
-            border-radius: 26px;
-            padding: 20px 24px;
-            margin-bottom: 18px;
-            box-shadow: var(--shadow-soft);
-            border: 1px solid rgba(148, 163, 184, 0.25);
-        }
-
-        .pipeline-flow {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .flow-step {
-            flex: 1;
-            text-align: center;
-            position: relative;
-        }
-
-        .flow-icon {
-            width: 76px;
-            height: 76px;
-            margin: 0 auto 8px;
-            border-radius: 999px;
-            background: var(--bg-elevated-soft);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.15);
-        }
-
-        .flow-icon img {
-            width: 46px;
-            height: 46px;
-        }
-
-        /* make upstream logos visible in dark mode */
-        body.dark-mode .flow-icon img {
-            filter: brightness(0) invert(1);
-        }
-
-        .flow-step.active .flow-icon {
-            box-shadow: 0 0 32px rgba(37, 99, 235, 0.7);
-            outline: 2px solid var(--accent);
-        }
-
-        .flow-label-main {
-            font-size: 0.9rem;
-            font-weight: 600;
-        }
-
-        .flow-label-sub {
-            font-size: 0.7rem;
-            color: var(--text-muted);
-        }
-
-        .flow-arrow {
-            position: absolute;
-            right: -10px;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 1.4rem;
-            color: rgba(148, 163, 184, 0.7);
-        }
-
-        .flow-step:last-child .flow-arrow {
-            display: none;
-        }
-
-        /* Layout below flow */
-
-        .main-grid {
-            display: grid;
-            grid-template-columns: 2.1fr 2.1fr 3.2fr;
-            gap: 16px;
-            align-items: flex-start;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 14px;
-        }
-
-        .stat-card,
-        .overview-card,
-        .activity-feed {
-            background: var(--bg-elevated);
-            border-radius: var(--card-radius);
-            padding: 18px 18px 16px;
-            border: 1px solid var(--border-subtle);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14);
-            transition: transform 0.15s ease, box-shadow 0.15s ease,
-                border-color 0.15s ease, background 0.15s ease;
-        }
-
-        .stat-card:hover,
-        .activity-feed:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.2);
-            border-color: rgba(37, 99, 235, 0.45);
-        }
-
-        .stat-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-
-        .stat-title {
-            font-size: 0.95rem;
-            font-weight: 600;
-        }
-
-        .status-badge {
-            padding: 5px 10px;
-            border-radius: 999px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            color: #f9fafb;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-
-        .status-healthy { background: var(--badge-healthy); }
-        .status-running { background: var(--badge-running); }
-        .status-stopped { background: var(--badge-stopped); }
-        .status-degraded { background: var(--badge-degraded); }
-        .status-unknown { background: var(--badge-unknown); }
-
-        .stat-value {
-            font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 6px;
-            color: var(--accent-strong);
-        }
-
-        .stat-detail {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin: 2px 0;
-        }
-
-        .stat-detail strong {
-            color: var(--text-main);
-        }
-
-        .metric-bar {
-            height: 6px;
-            background: rgba(148, 163, 184, 0.25);
-            border-radius: 999px;
-            overflow: hidden;
-            margin-top: 8px;
-        }
-
-        .metric-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent), #22c55e);
-            width: 0%;
-            transition: width 0.5s ease;
-        }
-
-        .sparkline {
-            width: 100%;
-            height: 36px;
-            margin-top: 8px;
-            border-radius: 10px;
-            background: radial-gradient(circle at top, rgba(148, 163, 184, 0.12), transparent 50%);
-        }
-
-        /* Overview + activity */
-
-        .overview-card {
             margin-bottom: 14px;
         }
-
-        .overview-title {
-            font-size: 0.9rem;
-            font-weight: 600;
-            margin-bottom: 6px;
-        }
-
-        .overview-text {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-bottom: 10px;
-        }
-
-        .overview-grid {
-            display: grid;
-            grid-template-columns: 1.2fr 1.2fr 1.4fr;
-            gap: 8px;
-            font-size: 0.78rem;
-            color: var(--text-muted);
-        }
-
-        .overview-grid strong {
-            color: var(--text-main);
-        }
-
-        .activity-feed {
-            max-height: 520px;
-            overflow-y: auto;
-        }
-
-        .activity-feed h2 {
-            font-size: 0.92rem;
-            margin-bottom: 12px;
-        }
-
-        .activity-item {
-            background: var(--bg-elevated-soft);
-            padding: 10px 12px;
-            border-radius: 10px;
-            margin-bottom: 8px;
-            border-left: 3px solid var(--accent);
-            font-size: 0.8rem;
-        }
-
-        .activity-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-        }
-
-        .activity-device {
-            font-weight: 600;
-            color: var(--accent-strong);
-        }
-
-        .activity-time {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-        }
-
-        .activity-details {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-
-        .detail-item {
-            display: flex;
-            gap: 4px;
-            font-size: 0.78rem;
-        }
-
-        .detail-label {
-            color: var(--text-muted);
-        }
-
-        .last-updated {
-            margin-top: 10px;
-            font-size: 0.78rem;
-            color: var(--text-muted);
-            text-align: right;
-        }
-
-        /* Clickable cards */
-
-        .clickable {
-            cursor: pointer;
-        }
-
-        .clickable:active {
-            transform: translateY(0);
-            box-shadow: 0 8px 25px rgba(15, 23, 42, 0.25);
-        }
-
-        /* JSON drawer */
-
-        .json-panel {
-            position: fixed;
-            top: 0;
-            right: 0;
-            width: 420px;
-            max-width: 80%;
-            height: 100%;
-            background: var(--bg-elevated);
-            box-shadow: -18px 0 40px rgba(15, 23, 42, 0.65);
-            border-left: 1px solid var(--border-subtle);
-            transform: translateX(100%);
-            transition: transform 0.25s ease;
-            z-index: 50;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .json-panel.open {
-            transform: translateX(0);
-        }
-
-        .json-panel-header {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border-subtle);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.85rem;
-        }
-
-        .json-panel-title span {
-            display: block;
-        }
-
-        .json-panel-title small {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-        }
-
-        .json-close {
-            border: none;
-            background: transparent;
-            font-size: 1.4rem;
-            cursor: pointer;
-            color: var(--text-muted);
-        }
-
-        .json-content {
-            flex: 1;
-            padding: 10px 16px 16px;
-            overflow: auto;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco,
-                Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.78rem;
-            line-height: 1.4;
-            white-space: pre;
-        }
-
-        pre {
-            margin: 0;
-        }
-
-        /* Loading */
-
-        .loading {
-            text-align: center;
-            padding: 24px;
-            font-size: 0.9rem;
-            color: var(--text-muted);
-        }
-
-        .spinner {
-            border: 3px solid rgba(148, 163, 184, 0.3);
-            border-top: 3px solid var(--accent);
+        .brand h1 { font-size: 1.55rem; letter-spacing: -0.01em; }
+        .brand p { color: var(--muted); font-size: 0.9rem; }
+        .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .control {
+            background: var(--panel);
+            border: 1px solid var(--border);
             border-radius: 999px;
-            width: 24px;
-            height: 24px;
-            margin: 0 auto 10px;
-            animation: spin 0.8s linear infinite;
+            padding: 6px 12px;
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            cursor: pointer;
         }
+        .control select { background: transparent; border: none; cursor: pointer; }
+        .control:hover { border-color: var(--accent); }
+        #updated { color: var(--muted); font-size: 0.85rem; }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        /* Status banner */
+        .banner {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+            padding: 14px 18px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--panel);
+            box-shadow: var(--shadow);
+            margin-bottom: 16px;
         }
-
-        @media (max-width: 1100px) {
-            .main-grid {
-                grid-template-columns: 1.7fr 1.7fr;
-            }
+        .banner .level {
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.8rem;
+            padding: 4px 10px;
+            border-radius: 999px;
+            white-space: nowrap;
         }
+        .banner ul { list-style: none; display: grid; gap: 2px; }
+        .banner .calm { color: var(--muted); }
 
-        @media (max-width: 900px) {
-            body { padding: 16px; }
-            .main-grid {
-                grid-template-columns: 1fr;
-            }
-            header {
-                flex-direction: column;
-                gap: 10px;
-            }
-            .pipeline-flow-wrapper {
-                margin-bottom: 12px;
-            }
+        .tone-ok { color: var(--ok); background: var(--ok-soft); }
+        .tone-warn { color: var(--warn); background: var(--warn-soft); }
+        .tone-bad { color: var(--bad); background: var(--bad-soft); }
+        .tone-idle { color: var(--idle); background: var(--idle-soft); }
+
+        /* Panels */
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 16px 18px;
+        }
+        .panel h2 {
+            font-size: 0.95rem;
+            font-weight: 650;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            align-items: baseline;
+        }
+        .panel .hint { color: var(--muted); font-size: 0.8rem; margin-bottom: 10px; }
+
+        .grid { display: grid; gap: 16px; margin-bottom: 16px; }
+        .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+        .two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .wide-left { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); align-items: start; }
+
+        /* KPI cards */
+        .kpi .label { color: var(--muted); font-size: 0.8rem; font-weight: 600; }
+        .kpi .value { font-size: 1.9rem; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0; }
+        .kpi .sub { color: var(--muted); font-size: 0.8rem; min-height: 2.3em; }
+        .kpi canvas { width: 100%; height: 34px; display: block; margin-top: 6px; }
+        .pill {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 650;
+            padding: 2px 8px;
+            border-radius: 999px;
+        }
+        .bar { height: 6px; border-radius: 999px; background: var(--idle-soft); overflow: hidden; margin-top: 8px; }
+        .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--ok); width: 0; transition: width 0.4s ease; }
+        .bar > span.warn { background: var(--warn); }
+        .bar > span.bad { background: var(--bad); }
+
+        /* Pipeline flow */
+        .flow { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+        .stage {
+            position: relative;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            background: var(--panel-soft);
+        }
+        .stage:not(:last-child)::after {
+            content: "";
+            position: absolute;
+            right: -8px;
+            top: 50%;
+            width: 6px;
+            height: 6px;
+            border-top: 2px solid var(--faint);
+            border-right: 2px solid var(--faint);
+            transform: translateY(-50%) rotate(45deg);
+        }
+        .stage .name { font-weight: 650; display: flex; gap: 8px; align-items: center; }
+        .stage .what { color: var(--muted); font-size: 0.78rem; }
+        .stage .metric { margin-top: 6px; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+        .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; background: var(--idle); }
+        .dot.ok { background: var(--ok); }
+        .dot.warn { background: var(--warn); }
+        .dot.bad { background: var(--bad); }
+
+        /* Charts */
+        .chart { width: 100%; height: 220px; display: block; }
+        .chart.small { height: 150px; }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+        .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+        .legend b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+        /* Tables and lists */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+        th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        td { padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        td.num, th.num { text-align: right; }
+        tr:last-child td { border-bottom: none; }
+
+        .list { display: grid; gap: 8px; }
+        .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+        .row .grow { flex: 1; min-width: 0; }
+        .row .muted { color: var(--muted); font-size: 0.8rem; }
+        .fresh .bar { margin-top: 4px; }
+        .alert-item { border-left: 3px solid var(--border); padding: 6px 10px; border-radius: 6px; background: var(--panel-soft); }
+        .alert-item.bad { border-left-color: var(--bad); }
+        .alert-item.warn { border-left-color: var(--warn); }
+        .empty { color: var(--muted); font-size: 0.85rem; padding: 6px 0; }
+
+        .services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; font-size: 0.84rem; }
+        .services span { display: flex; gap: 8px; align-items: center; }
+
+        .portals { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 10px; }
+        .portal {
+            display: block;
+            text-decoration: none;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: var(--panel-soft);
+        }
+        .portal:hover { border-color: var(--accent); }
+        .portal b { display: block; font-weight: 650; }
+        .portal span { color: var(--muted); font-size: 0.78rem; }
+
+        footer { color: var(--muted); font-size: 0.78rem; margin-top: 8px; }
+
+        dialog {
+            margin: auto;
+            width: min(760px, 92vw);
+            max-height: 80vh;
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+        }
+        dialog::backdrop { background: rgba(2, 6, 23, 0.55); }
+        dialog pre { overflow: auto; max-height: 64vh; font-size: 0.75rem; margin-top: 10px; }
+
+        @media (max-width: 1280px) {
+            .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .portals { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+            .stage:nth-child(3)::after { display: none; }
+        }
+        @media (max-width: 860px) {
+            body { padding: 14px; }
+            .kpis, .two, .wide-left { grid-template-columns: minmax(0, 1fr); }
+            .flow, .portals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .stage::after { display: none; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="title-block">
-                <h1>FLEAD Pipeline Monitor</h1>
-                <div class="subtitle">
-                    Real-time Federated Learning &amp; Edge Analytics Status
-                </div>
-            </div>
-            <div class="top-controls">
-                <div class="pill">
-                    <span>Refresh:</span>
-                    <select id="refresh-select" class="refresh-select">
-                        <option value="2000">2s</option>
-                        <option value="5000">5s</option>
-                        <option value="10000">10s</option>
-                        <option value="30000">30s</option>
-                    </select>
-                </div>
-                <div class="pill">
-                    <span>Backend:</span>
-                    <code>/api/status</code>
-                </div>
-                <button id="json-main-toggle" class="button-ghost">
-                    Raw JSON
-                </button>
-                <button id="theme-toggle" class="toggle" type="button" aria-pressed="false">
-                    <span class="toggle-label">Light</span>
-                    <div class="toggle-knob"></div>
-                </button>
-            </div>
-        </header>
+<div class="container">
+    <header>
+        <div class="brand">
+            <h1>FLEAD Monitor</h1>
+            <p>Streaming anomaly detection and differentially private federated learning, live</p>
+        </div>
+        <div class="controls">
+            <span id="updated" aria-live="polite">Connecting…</span>
+            <label class="control">Refresh
+                <select id="refresh" aria-label="Refresh interval">
+                    <option value="5000">5 s</option>
+                    <option value="10000">10 s</option>
+                    <option value="30000">30 s</option>
+                    <option value="0">Paused</option>
+                </select>
+            </label>
+            <button class="control" id="theme" type="button" aria-label="Toggle dark mode">Dark mode</button>
+            <button class="control" id="raw" type="button">Raw data</button>
+        </div>
+    </header>
 
-        <!-- Pipeline flow -->
-        <div class="pipeline-flow-wrapper">
-            <div class="pipeline-flow">
-                <div class="flow-step" id="step-kafka">
-                    <div class="flow-icon">
-                        <img
-                            src="https://cdn.worldvectorlogo.com/logos/kafka.svg"
-                            alt="Kafka"
-                            onerror="this.style.display='none';this.parentElement.textContent='KFK';"
-                        />
-                    </div>
-                    <div class="flow-label-main">Kafka</div>
-                    <div class="flow-label-sub">Data Streaming</div>
-                    <div class="flow-arrow">→</div>
-                </div>
+    <section class="banner" id="banner" aria-live="polite">
+        <span class="level tone-idle" id="level">Loading</span>
+        <ul id="reasons"><li class="calm">Collecting the first snapshot…</li></ul>
+    </section>
 
-                <div class="flow-step" id="step-flink">
-                    <div class="flow-icon">
-                        <img
-                            src="https://flink.apache.org/img/logo/png/1000/flink_squirrel_1000.png"
-                            alt="Flink"
-                            onerror="this.style.display='none';this.parentElement.textContent='FLK';"
-                        />
-                    </div>
-                    <div class="flow-label-main">Flink</div>
-                    <div class="flow-label-sub">Local ML Training</div>
-                    <div class="flow-arrow">→</div>
-                </div>
+    <section class="grid kpis" aria-label="Key figures">
+        <div class="panel kpi">
+            <div class="label">Held-out accuracy</div>
+            <div class="value" id="k-acc">–</div>
+            <div class="sub" id="k-acc-sub">Waiting for the first evaluation</div>
+            <canvas id="s-acc" aria-hidden="true"></canvas>
+        </div>
+        <div class="panel kpi">
+            <div class="label">Held-out F1</div>
+            <div class="value" id="k-f1">–</div>
+            <div class="sub" id="k-f1-sub">Precision and recall on unseen readings</div>
+            <canvas id="s-f1" aria-hidden="true"></canvas>
+        </div>
+        <div class="panel kpi">
+            <div class="label">Readings flagged (1 h)</div>
+            <div class="value" id="k-anom">–</div>
+            <div class="sub" id="k-anom-sub">RRCF anomaly scoring</div>
+            <canvas id="s-anom" aria-hidden="true"></canvas>
+        </div>
+        <div class="panel kpi">
+            <div class="label">Privacy budget ε</div>
+            <div class="value" id="k-eps">–</div>
+            <div class="sub" id="k-eps-sub">DP-FedAvg, δ = 1e-5</div>
+            <div class="bar"><span id="b-eps"></span></div>
+        </div>
+        <div class="panel kpi">
+            <div class="label">Global model</div>
+            <div class="value" id="k-round">–</div>
+            <div class="sub" id="k-round-sub">Federated rounds</div>
+            <canvas id="s-devices" aria-hidden="true"></canvas>
+        </div>
+        <div class="panel kpi">
+            <div class="label">Flink lag</div>
+            <div class="value" id="k-lag">–</div>
+            <div class="sub" id="k-lag-sub">Readings waiting in Kafka</div>
+            <div class="bar"><span id="b-lag"></span></div>
+        </div>
+    </section>
 
-                <div class="flow-step" id="step-aggregation">
-                    <div class="flow-icon" style="font-weight:600;font-size:1.3rem;background:rgba(37,99,235,0.12);color:var(--accent-strong);">
-                        AGG
-                    </div>
-                    <div class="flow-label-main">Aggregation</div>
-                    <div class="flow-label-sub">Global Model</div>
-                    <div class="flow-arrow">→</div>
-                </div>
+    <section class="panel" style="margin-bottom:16px" aria-label="Pipeline stages">
+        <h2>Pipeline <span class="hint" style="margin:0">Each stage's status comes from its service and how recent its output is</span></h2>
+        <div class="flow" id="flow"></div>
+    </section>
 
-                <div class="flow-step" id="step-database">
-                    <div class="flow-icon">
-                        <img
-                            src="https://avatars.githubusercontent.com/u/5430574?s=200&v=4"
-                            alt="TimescaleDB"
-                            onerror="this.style.display='none';this.parentElement.textContent='DB';"
-                        />
-                    </div>
-                    <div class="flow-label-main">TimescaleDB</div>
-                    <div class="flow-label-sub">Time-series Storage</div>
-                    <div class="flow-arrow">→</div>
-                </div>
+    <section class="grid two">
+        <div class="panel">
+            <h2>Global model on held-out readings</h2>
+            <p class="hint">Every new global version is scored by Spark on readings no device trained on</p>
+            <canvas class="chart" id="c-model" role="img" aria-label="Held-out accuracy, F1 and baseline by global version"></canvas>
+            <div class="legend" id="l-model"></div>
+        </div>
+        <div class="panel">
+            <h2>Stream activity</h2>
+            <p class="hint">Rates from the 15-second KPI snapshots, last 30 minutes</p>
+            <canvas class="chart small" id="c-readings" role="img" aria-label="Readings stored per second"></canvas>
+            <div class="legend" id="l-readings"></div>
+            <canvas class="chart small" id="c-events" role="img" aria-label="Anomalies and local models per minute" style="margin-top:10px"></canvas>
+            <div class="legend" id="l-events"></div>
+        </div>
+    </section>
 
-                <div class="flow-step" id="step-grafana">
-                    <div class="flow-icon">
-                        <img
-                            src="https://cdn.worldvectorlogo.com/logos/grafana.svg"
-                            alt="Grafana"
-                            onerror="this.style.display='none';this.parentElement.textContent='VIZ';"
-                        />
-                    </div>
-                    <div class="flow-label-main">Grafana</div>
-                    <div class="flow-label-sub">Dashboards &amp; UIs</div>
-                </div>
+    <section class="grid wide-left">
+        <div class="panel">
+            <h2>Recent federated rounds</h2>
+            <p class="hint">Agreement is the mean cosine similarity of device updates; clusters count groups of 3 or more similar devices</p>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Version</th><th>Time</th><th class="num">Devices</th><th class="num">Samples</th>
+                        <th class="num">Agreement</th><th class="num">Clusters</th><th class="num">DP noise σ</th>
+                        <th class="num">Clipped</th><th class="num">ε</th>
+                    </tr>
+                    </thead>
+                    <tbody id="rounds"><tr><td colspan="9" class="empty">No rounds yet</td></tr></tbody>
+                </table>
             </div>
         </div>
-
-        <!-- Main content grid -->
-        <div class="main-grid">
-            <!-- Left column: Kafka + Global -->
-            <div class="stats-grid">
-                <div class="stat-card clickable" id="card-kafka">
-                    <div class="stat-header">
-                        <div class="stat-title">Kafka Messages</div>
-                        <div class="status-badge status-unknown" id="kafka-status">
-                            Unknown
-                        </div>
-                    </div>
-                    <div class="stat-value" id="kafka-total">-</div>
-                    <div class="stat-detail">
-                        IoT Stream: <strong id="kafka-iiot">-</strong>
-                    </div>
-                    <div class="stat-detail">
-                        Local Model Updates: <strong id="kafka-models">-</strong>
-                    </div>
-                    <div class="stat-detail">
-                        Global Updates: <strong id="kafka-global">-</strong>
-                    </div>
-                    <canvas id="spark-kafka" class="sparkline"></canvas>
-                </div>
-
-                <div class="stat-card clickable" id="card-global">
-                    <div class="stat-header">
-                        <div class="stat-title">Global Models</div>
-                        <div class="status-badge status-running" id="global-status">
-                            Active
-                        </div>
-                    </div>
-                    <div class="stat-value" id="federated-total">-</div>
-                    <div class="stat-detail">
-                        Last minute: <strong id="federated-minute">-</strong>
-                    </div>
-                    <div class="stat-detail">
-                        Last 5 min: <strong id="federated-5min">-</strong>
-                    </div>
-                    <div class="metric-bar">
-                        <div class="metric-fill" id="federated-activity"></div>
-                    </div>
-                    <canvas id="spark-global" class="sparkline"></canvas>
-                </div>
+        <div class="grid" style="margin:0">
+            <div class="panel">
+                <h2>Alerts <span class="pill tone-idle" id="alert-count">–</span></h2>
+                <div class="list" id="alerts"><div class="empty">Loading…</div></div>
             </div>
-
-            <!-- Middle column: Flink + Local + Health -->
-            <div class="stats-grid">
-                <div class="stat-card clickable" id="card-flink">
-                    <div class="stat-header">
-                        <div class="stat-title">Flink Jobs</div>
-                        <div class="status-badge status-unknown" id="flink-status">
-                            Loading
-                        </div>
-                    </div>
-                    <div class="stat-value" id="flink-jobs">-</div>
-                    <div class="stat-detail" id="flink-details">
-                        Checking jobs...
-                    </div>
-                </div>
-
-                <div class="stat-card clickable" id="card-local">
-                    <div class="stat-header">
-                        <div class="stat-title">Local Models</div>
-                        <div class="status-badge status-running" id="db-status">
-                            Running
-                        </div>
-                    </div>
-                    <div class="stat-value" id="local-total">-</div>
-                    <div class="stat-detail">
-                        Last minute: <strong id="local-minute">-</strong>
-                    </div>
-                    <div class="stat-detail">
-                        Last 5 min: <strong id="local-5min">-</strong>
-                    </div>
-                    <div class="metric-bar">
-                        <div class="metric-fill" id="local-activity"></div>
-                    </div>
-                    <canvas id="spark-local" class="sparkline"></canvas>
-                </div>
-
-                <div class="stat-card clickable" id="card-health">
-                    <div class="stat-header">
-                        <div class="stat-title">Pipeline Health</div>
-                        <div class="status-badge status-unknown" id="health-status">
-                            Unknown
-                        </div>
-                    </div>
-                    <div class="stat-value" id="health-text">-</div>
-                    <div class="stat-detail">
-                        Docker Services: <strong id="docker-count">-</strong>
-                    </div>
-                    <div class="stat-detail">
-                        Data Flow: <strong id="flow-status">-</strong>
-                    </div>
-                </div>
+            <div class="panel">
+                <h2>Data freshness</h2>
+                <p class="hint">Age of the newest record per stage against its limit</p>
+                <div class="list fresh" id="freshness"></div>
             </div>
-
-            <!-- Right column: overview + recent models -->
-            <div>
-                <div class="overview-card">
-                    <div class="overview-title">Pipeline Overview</div>
-                    <div class="overview-text">
-                        Click any service or stat card for focused JSON or to inspect
-                        topics, jobs, and model activity in more detail.
-                    </div>
-                    <div class="overview-grid">
-                        <div>
-                            <strong>Kafka Topics:</strong><br />
-                            edge-iiot-stream, local/global updates
-                        </div>
-                        <div>
-                            <strong>Training Flow:</strong><br />
-                            Kafka → Flink → Aggregator → TimescaleDB
-                        </div>
-                        <div>
-                            <strong>Monitoring:</strong><br />
-                            Monitoring Dashboard + Grafana
-                        </div>
-                    </div>
-                </div>
-
-                <div class="activity-feed">
-                    <h2>Recent Model Training Activity</h2>
-                    <div id="activity-list">
-                        <div class="loading">
-                            <div class="spinner"></div>
-                            Loading recent activity...
-                        </div>
-                    </div>
-                </div>
-
-                <div class="last-updated">
-                    Last updated: <span id="last-update">Never</span>
-                </div>
+            <div class="panel">
+                <h2>Services</h2>
+                <div class="services" id="services"></div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <!-- JSON drawer -->
-    <div class="json-panel" id="json-panel">
-        <div class="json-panel-header">
-            <div class="json-panel-title">
-                <span id="json-title">Raw /api/status</span>
-                <small id="json-subtitle">Full payload</small>
-            </div>
-            <button class="json-close" id="json-close" aria-label="Close JSON">&times;</button>
-        </div>
-        <div class="json-content">
-            <pre id="json-content">{}</pre>
-        </div>
-    </div>
+    <section class="panel" aria-label="Web interfaces">
+        <h2>Web interfaces</h2>
+        <div class="portals" id="portals"></div>
+    </section>
 
-    <script>
-        let isUpdating = false;
-        let errorCount = 0;
-        const MAX_ERRORS = 3;
-        let refreshMs = 2000;
-        let refreshTimer = null;
-        let lastStatus = null;
+    <footer>Data: TimescaleDB (bounded queries and 15-second KPI snapshots), Prometheus and the Flink REST API, through <code>/api/overview</code>.</footer>
+</div>
 
-        const historyData = {
-            kafka: [],
-            local: [],
-            global: [],
-        };
-        const MAX_POINTS = 40;
+<dialog id="raw-dialog">
+    <div class="row"><strong>/api/overview</strong><button class="control" id="raw-close" type="button">Close</button></div>
+    <pre id="raw-json">{}</pre>
+</dialog>
 
-        // THEME
-        const themeToggle = document.getElementById("theme-toggle");
-        const themeLabel = themeToggle.querySelector(".toggle-label");
+<script>
+    const $ = (id) => document.getElementById(id);
+    let last = null;
+    let failures = 0;
+    let timer = null;
 
-        function applyThemeFromStorage() {
-            const stored = localStorage.getItem("flead-theme");
-            const prefersDark = window.matchMedia &&
-                window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+    const pct = (v, d = 1) => (v == null ? "–" : (v * 100).toFixed(d) + "%");
+    const num = (v, d = 0) => (v == null ? "–" : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d}));
+    const age = (s) => {
+        if (s == null) return "waiting";
+        if (s < 90) return Math.max(0, Math.round(s)) + " s";
+        if (s < 5400) return Math.round(s / 60) + " min";
+        return (s / 3600).toFixed(1) + " h";
+    };
+    const compact = (v) => (Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : v.toFixed(0));
+    const clock = (iso) => new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-            const useDark = stored === "dark" || (!stored && prefersDark);
-            document.body.classList.toggle("dark-mode", useDark);
-            themeLabel.textContent = useDark ? "Dark" : "Light";
-        }
+    // ---------------------------------------------------------------- charts
+    function setupCanvas(canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        return {ctx, w, h};
+    }
 
-        applyThemeFromStorage();
-
-        themeToggle.addEventListener("click", () => {
-            const isDark = !document.body.classList.contains("dark-mode");
-            document.body.classList.toggle("dark-mode", isDark);
-            localStorage.setItem("flead-theme", isDark ? "dark" : "light");
-            themeLabel.textContent = isDark ? "Dark" : "Light";
+    function sparkline(canvas, values, color) {
+        const {ctx, w, h} = setupCanvas(canvas);
+        const pts = values.filter((v) => v != null);
+        if (pts.length < 2) return;
+        const lo = Math.min(...pts), hi = Math.max(...pts), span = hi - lo || 1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        pts.forEach((v, i) => {
+            const x = (i / (pts.length - 1)) * (w - 2) + 1;
+            const y = h - 3 - ((v - lo) / span) * (h - 6);
+            i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
         });
+        ctx.stroke();
+    }
 
-        // JSON drawer helpers
-        const jsonPanel = document.getElementById("json-panel");
-        const jsonTitle = document.getElementById("json-title");
-        const jsonSubtitle = document.getElementById("json-subtitle");
-        const jsonContent = document.getElementById("json-content");
-
-        function openJsonDrawer(payload, title, subtitle) {
-            if (!payload && !lastStatus) return;
-            jsonTitle.textContent = title || "Raw /api/status";
-            jsonSubtitle.textContent =
-                subtitle || "Full payload";
-            jsonContent.textContent = JSON.stringify(payload || lastStatus, null, 2);
-            jsonPanel.classList.add("open");
+    function lineChart(canvas, {series, yFormat, xFormat, yMin, yMax, empty}) {
+        const {ctx, w, h} = setupCanvas(canvas);
+        const pad = {l: 52, r: 12, t: 10, b: 24};
+        const points = series.flatMap((s) => s.points);
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.fillStyle = cssVar("--muted");
+        if (points.length < 2) {
+            ctx.fillText(empty || "Waiting for data…", pad.l, h / 2);
+            return;
         }
+        let x0 = Math.min(...points.map((p) => p[0])), x1 = Math.max(...points.map((p) => p[0]));
+        if (x0 === x1) x1 = x0 + 1;
+        let y0 = Math.min(...points.map((p) => p[1])), y1 = Math.max(...points.map((p) => p[1]));
+        const span = y1 - y0 || Math.abs(y1) || 1;
+        y0 = yMin ?? y0 - span * 0.12;
+        y1 = yMax ?? y1 + span * 0.12;
+        const X = (v) => pad.l + ((v - x0) / (x1 - x0)) * (w - pad.l - pad.r);
+        const Y = (v) => h - pad.b - ((v - y0) / (y1 - y0)) * (h - pad.t - pad.b);
 
-        function closeJsonDrawer() {
-            jsonPanel.classList.remove("open");
-        }
-
-        document.getElementById("json-close").addEventListener("click", closeJsonDrawer);
-        document.getElementById("json-main-toggle").addEventListener("click", () =>
-            openJsonDrawer(lastStatus, "Raw /api/status", "Full payload")
-        );
-
-        // Refresh select
-        document.getElementById("refresh-select").addEventListener("change", (e) => {
-            refreshMs = parseInt(e.target.value, 10);
-            scheduleRefresh();
-        });
-
-        function scheduleRefresh() {
-            if (refreshTimer) clearInterval(refreshTimer);
-            refreshTimer = setInterval(updateDashboard, refreshMs);
-        }
-
-        // Status badges
-        function updateStatus(elementId, status) {
-            const el = document.getElementById(elementId);
-            if (!el) return;
-            el.className = "status-badge";
-            const s = (status || "").toString().toLowerCase();
-
-            if (s === "healthy") {
-                el.classList.add("status-healthy");
-                el.textContent = "Healthy";
-            } else if (s === "running" || s === "active") {
-                el.classList.add("status-running");
-                el.textContent = "Running";
-            } else if (s === "stopped" || s === "idle") {
-                el.classList.add("status-stopped");
-                el.textContent = "Stopped";
-            } else if (s === "degraded") {
-                el.classList.add("status-degraded");
-                el.textContent = "Degraded";
-            } else {
-                el.classList.add("status-unknown");
-                el.textContent = "Unknown";
-            }
-        }
-
-        function updateFlowStep(stepId, status) {
-            const step = document.getElementById(stepId);
-            if (!step) return;
-            const s = (status || "").toString().toLowerCase();
-            if (["healthy", "running", "active"].includes(s)) {
-                step.classList.add("active");
-            } else {
-                step.classList.remove("active");
-            }
-        }
-
-        // Sparklines
-        function drawSparkline(canvasId, values) {
-            const canvas = document.getElementById(canvasId);
-            if (!canvas || values.length < 2) return;
-            const ctx = canvas.getContext("2d");
-            const width = canvas.width = canvas.clientWidth * 2;
-            const height = canvas.height = canvas.clientHeight * 2;
-
-            ctx.clearRect(0, 0, width, height);
-
-            const maxVal = Math.max(...values);
-            const minVal = Math.min(...values);
-            const range = maxVal - minVal || 1;
-
-            const stepX = width / (values.length - 1);
-
-            const dark = document.body.classList.contains("dark-mode");
-            ctx.strokeStyle = dark ? "#60a5fa" : "#2563eb";
-            ctx.lineWidth = 2;
-            ctx.lineJoin = "round";
-            ctx.lineCap = "round";
-
+        ctx.strokeStyle = cssVar("--border");
+        ctx.lineWidth = 1;
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        for (let i = 0; i <= 4; i++) {
+            const v = y0 + ((y1 - y0) * i) / 4;
             ctx.beginPath();
-            values.forEach((v, idx) => {
-                const x = idx * stepX;
-                const norm = (v - minVal) / range;
-                const y = height - norm * (height - 8) - 4;
-                if (idx === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            });
+            ctx.moveTo(pad.l, Y(v));
+            ctx.lineTo(w - pad.r, Y(v));
+            ctx.stroke();
+            ctx.fillText(yFormat(v), pad.l - 8, Y(v));
+        }
+        ctx.textBaseline = "top";
+        ctx.textAlign = "left";
+        ctx.fillText(xFormat(x0), pad.l, h - pad.b + 7);
+        ctx.textAlign = "right";
+        ctx.fillText(xFormat(x1), w - pad.r, h - pad.b + 7);
+
+        for (const s of series) {
+            if (!s.points.length) continue;
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = s.width || 2;
+            ctx.setLineDash(s.dash || []);
+            ctx.beginPath();
+            s.points.forEach((p, i) => (i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))));
             ctx.stroke();
         }
+        ctx.setLineDash([]);
+    }
 
-        // Main update loop
-        async function updateDashboard() {
-            if (isUpdating) return;
-            isUpdating = true;
+    function legend(el, items) {
+        el.innerHTML = items
+            .map((it) => `<span><i style="background:${it.color}"></i>${esc(it.label)} <b>${esc(it.value)}</b></span>`)
+            .join("");
+    }
 
-            try {
-                const response = await fetch("/api/status");
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
+    // ---------------------------------------------------------------- render
+    function toneClass(t) { return {ok: "tone-ok", warn: "tone-warn", bad: "tone-bad"}[t] || "tone-idle"; }
 
-                const data = await response.json();
-                lastStatus = data;
-                errorCount = 0;
+    function renderStatus(o) {
+        const level = o.status?.level || "unknown";
+        const tone = {healthy: "ok", degraded: "warn", critical: "bad"}[level] || "idle";
+        $("level").className = "level " + toneClass(tone);
+        $("level").textContent = level;
+        const reasons = o.status?.reasons || [];
+        $("reasons").innerHTML = reasons.length
+            ? reasons.map((r) => `<li>${esc(r)}</li>`).join("")
+            : '<li class="calm">All stages are fresh, Flink keeps up with the stream and no alerts are firing.</li>';
+        $("updated").textContent = "Updated " + new Date(o.generated_at).toLocaleTimeString();
+    }
 
-                // Timestamp
-                document.getElementById("last-update").textContent =
-                    new Date(data.timestamp).toLocaleTimeString();
+    function renderKpis(o) {
+        const hist = o.heldout_history || [];
+        const latest = hist[hist.length - 1];
+        if (latest) {
+            $("k-acc").textContent = pct(latest.accuracy);
+            if (latest.accuracy != null && latest.baseline != null) {
+                const lead = (latest.accuracy - latest.baseline) * 100;
+                $("k-acc-sub").innerHTML =
+                    `<span class="pill ${lead > 0 ? "tone-ok" : "tone-bad"}">${lead >= 0 ? "+" : ""}${lead.toFixed(1)} pts</span> ` +
+                    `vs always-benign ${pct(latest.baseline)} · v${esc(latest.version)}`;
+            } else {
+                $("k-acc-sub").textContent = `Global v${latest.version}`;
+            }
+            $("k-f1").textContent = latest.f1 == null ? "–" : latest.f1.toFixed(3);
+            $("k-f1-sub").textContent = `Precision ${pct(latest.precision)} · recall ${pct(latest.recall)} · ${num(latest.samples)} readings`;
+        }
+        sparkline($("s-acc"), hist.map((e) => e.accuracy), cssVar("--chart-1"));
+        sparkline($("s-f1"), hist.map((e) => e.f1), cssVar("--chart-2"));
 
-                // Kafka stats
-                const kafkaStats = data.kafka || {};
-                const iiot = kafkaStats["edge-iiot-stream"] || 0;
-                const localUpdates = kafkaStats["local-model-updates"] || 0;
-                const globalUpdates = kafkaStats["global-model-updates"] || 0;
-                const kafkaTotal = iiot + localUpdates + globalUpdates;
+        const snap = o.snapshot || {};
+        $("k-anom").textContent = pct(snap.anomaly_rate_1h);
+        $("k-anom-sub").textContent = snap.anomaly_attack_share_1h == null
+            ? "RRCF anomaly scoring"
+            : `${pct(snap.anomaly_attack_share_1h, 0)} of flagged readings are real attacks`;
+        sparkline($("s-anom"), (o.rates?.anomalies_per_min || []).map((p) => p[1]), cssVar("--chart-4"));
 
-                document.getElementById("kafka-total").textContent =
-                    kafkaTotal.toLocaleString();
-                document.getElementById("kafka-iiot").textContent =
-                    iiot.toLocaleString();
-                document.getElementById("kafka-models").textContent =
-                    localUpdates.toLocaleString();
-                document.getElementById("kafka-global").textContent =
-                    globalUpdates.toLocaleString();
+        const round = (o.rounds || [])[0];
+        const epsLimit = o.limits?.epsilon || 50;
+        if (round) {
+            $("k-eps").textContent = round.epsilon == null ? "off" : round.epsilon.toFixed(2);
+            $("k-eps-sub").textContent = `After ${num(round.version)} rounds · alert above ${epsLimit} · δ = 1e-5`;
+            const share = Math.min((round.epsilon || 0) / epsLimit, 1);
+            $("b-eps").style.width = share * 100 + "%";
+            $("b-eps").className = share >= 1 ? "bad" : share >= 0.5 ? "warn" : "";
+            $("k-round").textContent = "v" + round.version;
+            $("k-round-sub").textContent = round.rollback
+                ? "Rolled back to the best held-out version"
+                : `${num(round.devices)} devices in the last round · agreement ${round.agreement == null ? "–" : round.agreement.toFixed(2)}`;
+        }
+        sparkline($("s-devices"), (o.rounds || []).slice().reverse().map((r) => r.devices), cssVar("--chart-3"));
 
-                // Map our kafka_status to badge types
-                const kafkaStatus =
-                    (data.kafka_status || (kafkaTotal > 0 ? "running" : "stopped"));
-                updateStatus(
-                    "kafka-status",
-                    kafkaStatus === "active" ? "running" : kafkaStatus
-                );
-                updateFlowStep(
-                    "step-kafka",
-                    kafkaStatus === "active" ? "running" : kafkaStatus
-                );
+        const flink = o.flink || {};
+        const lagLimit = o.limits?.lag || 9000;
+        $("k-lag").textContent = flink.lag == null ? "–" : num(flink.lag);
+        $("k-lag-sub").textContent = flink.consumed_per_s == null
+            ? "Readings waiting in Kafka"
+            : `Flink reads ${num(flink.consumed_per_s)}/s · alert above ${num(lagLimit)}`;
+        const lagShare = flink.lag == null ? 0 : Math.min(flink.lag / lagLimit, 1);
+        $("b-lag").style.width = lagShare * 100 + "%";
+        $("b-lag").className = lagShare >= 1 ? "bad" : lagShare >= 0.5 ? "warn" : "";
+    }
 
-                // Flink jobs
-                const flinkJobs = data.flink || [];
-                document.getElementById("flink-jobs").textContent =
-                    flinkJobs.length;
-                if (flinkJobs.length > 0) {
-                    const jobNames = flinkJobs
-                        .map((j) => `${j.name} (${j.status})`)
-                        .join(", ");
-                    document.getElementById("flink-details").textContent =
-                        jobNames;
-                    updateStatus(
-                        "flink-status",
-                        (flinkJobs[0].status || "").toLowerCase()
-                    );
-                    updateFlowStep("step-flink", "running");
-                } else {
-                    document.getElementById("flink-details").textContent =
-                        "No jobs running";
-                    updateStatus("flink-status", "stopped");
-                    updateFlowStep("step-flink", "stopped");
-                }
+    function freshTone(o, stage) {
+        const f = (o.freshness || []).find((x) => x.stage === stage);
+        if (!f || f.age_s == null) return "idle";
+        return f.age_s <= f.limit_s ? "ok" : "warn";
+    }
 
-                // Database stats
-                const dbStats = data.database || {};
-                const local = dbStats.local_models || {
-                    total: 0,
-                    last_minute: 0,
-                    last_5min: 0,
-                };
-                const federated = dbStats.federated_models || {
-                    total: 0,
-                    last_minute: 0,
-                    last_5min: 0,
-                };
+    function renderFlow(o) {
+        const svc = o.services || {};
+        const flink = o.flink || {};
+        const snap = o.snapshot || {};
+        const round = (o.rounds || [])[0];
+        const readings = (o.rates?.readings_per_s || []).slice(-1)[0];
+        const job = (flink.jobs || [])[0];
+        const firing = (o.alerts?.active || []).filter((a) => a.state === "firing").length;
+        const worst = (...tones) => (tones.includes("bad") ? "bad" : tones.includes("warn") ? "warn" : tones.every((t) => t === "idle") ? "idle" : "ok");
 
-                document.getElementById("local-total").textContent =
-                    local.total.toLocaleString();
-                document.getElementById("local-minute").textContent =
-                    local.last_minute;
-                document.getElementById("local-5min").textContent =
-                    local.last_5min;
+        const stages = [
+            {
+                name: "Kafka", what: "Producer stream, one broker",
+                tone: svc["kafka-broker-1"] !== "running" ? "bad" : freshTone(o, "Readings stored"),
+                metric: readings ? `${num(readings[1])} readings/s stored` : "waiting for readings",
+            },
+            {
+                name: "Flink", what: "RRCF scoring · local training",
+                tone: !job || (job.status || "").toUpperCase() !== "RUNNING" ? "bad"
+                    : flink.lag != null && flink.lag > (o.limits?.lag || 9000) ? "warn" : freshTone(o, "Anomalies scored"),
+                metric: flink.consumed_per_s == null ? (job ? job.status : "no job") : `${num(flink.consumed_per_s)}/s · lag ${num(flink.lag)}`,
+            },
+            {
+                name: "Aggregator", what: "FedAvg with differential privacy",
+                tone: freshTone(o, "Federated rounds"),
+                metric: round ? `v${round.version} · ${num(round.devices)} devices` : "waiting for 200 devices",
+            },
+            {
+                name: "Spark", what: "Held-out evaluation · fleet z-score",
+                tone: svc["spark-master"] !== "running" ? "bad" : worst(freshTone(o, "Held-out evaluations"), freshTone(o, "Fleet z-score windows")),
+                metric: `evaluated ${age((o.freshness || []).find((f) => f.stage === "Held-out evaluations")?.age_s)} ago`,
+            },
+            {
+                name: "TimescaleDB", what: "Time-series storage",
+                tone: o.db_up ? "ok" : "bad",
+                metric: snap.total_iot_count == null ? "–" : `${num(snap.total_iot_count)} readings`,
+            },
+            {
+                name: "Grafana · Prometheus", what: "Dashboards · alert rules",
+                tone: svc.grafana !== "running" || !o.alerts?.prometheus_up ? "bad" : firing ? "warn" : "ok",
+                metric: firing ? `${firing} alert(s) firing` : "no alerts firing",
+            },
+        ];
+        $("flow").innerHTML = stages.map((s) => `
+            <div class="stage">
+                <div class="name"><span class="dot ${s.tone}" aria-label="${s.tone}"></span>${esc(s.name)}</div>
+                <div class="what">${esc(s.what)}</div>
+                <div class="metric">${esc(s.metric)}</div>
+            </div>`).join("");
+    }
 
-                const localActivity =
-                    Math.min((local.last_minute / 50) * 100, 100);
-                document.getElementById("local-activity").style.width =
-                    localActivity + "%";
+    function renderCharts(o) {
+        const hist = (o.heldout_history || []).filter((e) => !isNaN(parseInt(e.version, 10)));
+        const byVersion = (key) => hist.filter((e) => e[key] != null).map((e) => [parseInt(e.version, 10), e[key]]);
+        const latest = hist[hist.length - 1] || {};
+        const c1 = cssVar("--chart-1"), c2 = cssVar("--chart-2"), c3 = cssVar("--chart-3"), c4 = cssVar("--chart-4");
+        lineChart($("c-model"), {
+            series: [
+                {points: byVersion("accuracy"), color: c1},
+                {points: byVersion("f1"), color: c2},
+                {points: byVersion("baseline"), color: c3, dash: [6, 5], width: 1.5},
+            ],
+            yFormat: (v) => (v * 100).toFixed(0) + "%",
+            xFormat: (v) => "v" + Math.round(v),
+            empty: "Waiting for the first held-out evaluation…",
+        });
+        legend($("l-model"), [
+            {label: "Accuracy", color: c1, value: pct(latest.accuracy)},
+            {label: "F1", color: c2, value: latest.f1 == null ? "–" : latest.f1.toFixed(3)},
+            {label: "Always-benign baseline", color: c3, value: pct(latest.baseline)},
+        ]);
 
-                updateStatus("db-status", data.docker_services?.timescaledb);
-                updateFlowStep(
-                    "step-database",
-                    data.docker_services?.timescaledb
-                );
+        const toXY = (arr) => (arr || []).map((p) => [Date.parse(p[0]), p[1]]);
+        const readings = toXY(o.rates?.readings_per_s);
+        lineChart($("c-readings"), {
+            series: [{points: readings, color: c1}],
+            yFormat: (v) => v.toFixed(0) + "/s",
+            xFormat: (v) => clock(new Date(v).toISOString()),
+            yMin: 0,
+        });
+        legend($("l-readings"), [{label: "Readings stored", color: c1, value: readings.length ? num(readings[readings.length - 1][1]) + "/s" : "–"}]);
 
-                document.getElementById("federated-total").textContent =
-                    federated.total.toLocaleString();
-                document.getElementById("federated-minute").textContent =
-                    federated.last_minute;
-                document.getElementById("federated-5min").textContent =
-                    federated.last_5min;
+        const anomalies = toXY(o.rates?.anomalies_per_min);
+        const models = toXY(o.rates?.local_models_per_min);
+        lineChart($("c-events"), {
+            series: [{points: anomalies, color: c4}, {points: models, color: c2}],
+            yFormat: (v) => compact(v) + "/min",
+            xFormat: (v) => clock(new Date(v).toISOString()),
+            yMin: 0,
+        });
+        legend($("l-events"), [
+            {label: "Anomalies stored", color: c4, value: anomalies.length ? num(anomalies[anomalies.length - 1][1]) + "/min" : "–"},
+            {label: "Local models", color: c2, value: models.length ? num(models[models.length - 1][1]) + "/min" : "–"},
+        ]);
+    }
 
-                const federatedActivity =
-                    Math.min((federated.last_minute / 10) * 100, 100);
-                document.getElementById("federated-activity").style.width =
-                    federatedActivity + "%";
+    function renderRounds(rounds) {
+        if (!rounds || !rounds.length) return;
+        $("rounds").innerHTML = rounds.map((r) => `
+            <tr>
+                <td><b>v${esc(r.version)}</b>${r.rollback ? ' <span class="pill tone-warn">rollback</span>' : ""}</td>
+                <td>${esc(clock(r.at))}</td>
+                <td class="num">${num(r.devices)}</td>
+                <td class="num">${num(r.samples)}</td>
+                <td class="num">${r.agreement == null ? "–" : r.agreement.toFixed(2)}</td>
+                <td class="num">${r.clusters ?? "–"}</td>
+                <td class="num">${r.dp_noise_std == null ? "–" : r.dp_noise_std.toFixed(4)}</td>
+                <td class="num">${num(r.dp_clipped)}</td>
+                <td class="num">${r.epsilon == null ? "off" : r.epsilon.toFixed(2)}</td>
+            </tr>`).join("");
+    }
 
-                updateFlowStep(
-                    "step-aggregation",
-                    federated.last_5min > 0 ? "running" : "stopped"
-                );
+    function renderAlerts(alerts) {
+        alerts = alerts || {};
+        const active = alerts.active || [];
+        const firing = active.filter((a) => a.state === "firing");
+        $("alert-count").className = "pill " + (firing.length ? "tone-bad" : active.length ? "tone-warn" : "tone-ok");
+        $("alert-count").textContent = firing.length ? `${firing.length} firing` : active.length ? `${active.length} pending` : "none";
+        const items = active.map((a) => `
+            <div class="alert-item ${a.severity === "critical" ? "bad" : "warn"}">
+                <div class="row"><b>${esc(a.name)}</b><span class="pill ${a.state === "firing" ? "tone-bad" : "tone-warn"}">${esc(a.state)}</span></div>
+                <div class="muted">${esc(a.summary)}${a.active_at ? " · since " + esc(clock(a.active_at)) : ""}</div>
+            </div>`);
+        const received = (alerts.received || []).slice(0, 3).map((a) => `
+            <div class="alert-item">
+                <div class="row"><span>${esc(a.alertname)}</span><span class="muted">${esc(a.status)} · ${esc(clock(a.timestamp))}</span></div>
+            </div>`);
+        let html = items.join("");
+        if (!alerts.prometheus_up) html = '<div class="empty">Prometheus is unreachable, so alert rules are not being evaluated.</div>' + html;
+        else if (!items.length) html = '<div class="empty">No alert rules are pending or firing.</div>';
+        if (received.length) html += '<div class="muted" style="margin-top:4px">Recently delivered by Alertmanager</div>' + received.join("");
+        $("alerts").innerHTML = html;
+    }
 
-                // Python processes
-                const pythonProcs = data.python_processes || [];
-                document.getElementById("python-count") &&
-                    (document.getElementById("python-count").textContent =
-                        pythonProcs.length);
-                if (pythonProcs.length > 0) {
-                    const procList = pythonProcs
-                        .map((p) => `[OK] ${p.name} (PID: ${p.pid})`)
-                        .join("<br>");
-                    const listEl = document.getElementById("python-list");
-                    if (listEl) listEl.innerHTML = procList;
-                }
+    function renderFreshness(freshness) {
+        $("freshness").innerHTML = (freshness || []).map((f) => {
+            const share = f.age_s == null ? 0 : Math.min(f.age_s / f.limit_s, 1);
+            const cls = f.age_s == null ? "" : f.age_s > f.limit_s ? "bad" : share > 0.6 ? "warn" : "";
+            return `
+            <div>
+                <div class="row"><span class="grow">${esc(f.stage)}</span><span class="muted">${esc(age(f.age_s))} / ${esc(age(f.limit_s))}</span></div>
+                <div class="bar"><span class="${cls}" style="width:${f.age_s == null ? 0 : Math.max(share * 100, 2)}%"></span></div>
+            </div>`;
+        }).join("");
+    }
 
-                // Overall health
-                const dockerStatuses = Object.values(data.docker_services || {});
-                const dockerHealthy = dockerStatuses.filter((s) =>
-                    ["healthy", "running", "active"].includes(
-                        (s || "").toString().toLowerCase()
-                    )
-                ).length;
+    function renderServices(services) {
+        $("services").innerHTML = Object.entries(services || {}).map(([name, state]) =>
+            `<span><i class="dot ${state === "running" ? "ok" : "bad"}"></i>${esc(name)}</span>`).join("");
+    }
 
-                document.getElementById("health-text").textContent =
-                    (data.pipeline_health || "unknown").toUpperCase();
-                document.getElementById("docker-count").textContent =
-                    `${dockerHealthy}/${dockerStatuses.length} healthy`;
-                document.getElementById("flow-status").textContent =
-                    kafkaTotal > 0 ? "Active" : "Idle";
-                updateStatus("health-status", data.pipeline_health);
-                updateFlowStep(
-                    "step-grafana",
-                    data.docker_services?.grafana
-                );
+    function renderPortals(portals) {
+        $("portals").innerHTML = (portals || []).map((p) =>
+            `<a class="portal" href="${esc(p.url)}" target="_blank" rel="noopener"><b>${esc(p.name)}</b><span>${esc(p.purpose)}</span></a>`).join("");
+    }
 
-                // Activity feed
-                const activityRoot = document.getElementById("activity-list");
-                if (data.recent_models && data.recent_models.length > 0) {
-                    const html = data.recent_models
-                        .map(
-                            (model) => `
-                        <div class="activity-item">
-                            <div class="activity-header">
-                                <div class="activity-device">${model.device_id}</div>
-                                <div class="activity-time">${formatTime(
-                                    model.timestamp
-                                )}</div>
-                            </div>
-                            <div class="activity-details">
-                                <div class="detail-item">
-                                    <span class="detail-label">Version:</span>
-                                    <span>${model.model_version}</span>
-                                </div>
-                                <div class="detail-item">
-                                    <span class="detail-label">Accuracy:</span>
-                                    <span>${(model.accuracy * 100).toFixed(
-                                        1
-                                    )}%</span>
-                                </div>
-                                <div class="detail-item">
-                                    <span class="detail-label">Samples:</span>
-                                    <span>${model.samples}</span>
-                                </div>
-                                <div class="detail-item">
-                                    <span class="detail-label">Global:</span>
-                                    <span>v${model.global_version}</span>
-                                </div>
-                            </div>
-                        </div>`
-                        )
-                        .join("");
-                    activityRoot.innerHTML = html;
-                } else {
-                    activityRoot.innerHTML = `
-                        <div class="loading">
-                            <div class="spinner"></div>
-                            Waiting for local model updates...
-                        </div>`;
-                }
+    function render(o) {
+        renderStatus(o);
+        renderKpis(o);
+        renderFlow(o);
+        renderCharts(o);
+        renderRounds(o.rounds);
+        renderAlerts(o.alerts);
+        renderFreshness(o.freshness);
+        renderServices(o.services);
+        renderPortals(o.portals);
+    }
 
-                // Update sparkline histories
-                pushHistory(historyData.kafka, kafkaTotal);
-                pushHistory(historyData.local, local.total);
-                pushHistory(historyData.global, federated.total);
-
-                drawSparkline("spark-kafka", historyData.kafka);
-                drawSparkline("spark-local", historyData.local);
-                drawSparkline("spark-global", historyData.global);
-            } catch (err) {
-                console.error("Error updating dashboard:", err);
-                errorCount++;
-
-                if (errorCount >= MAX_ERRORS) {
-                    document.getElementById("health-text").textContent =
-                        "ERROR";
-                    document.getElementById("health-status").className =
-                        "status-badge status-stopped";
-                    document.getElementById("health-status").textContent =
-                        "Connection Lost";
-                    document.getElementById("activity-list").innerHTML = `
-                        <div class="activity-item" style="background: rgba(239,68,68,0.08); border-left-color:#ef4444;">
-                            <div style="font-size:0.9rem; margin-bottom:4px;"><strong>Connection error</strong></div>
-                            <div style="font-size:0.8rem; color:var(--text-muted);">
-                                Cannot reach <code>/api/status</code>. Error: ${err.message}
-                            </div>
-                        </div>`;
-                }
-            } finally {
-                isUpdating = false;
+    // ---------------------------------------------------------------- polling
+    async function refresh() {
+        try {
+            const resp = await fetch("/api/overview", {cache: "no-store"});
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            last = await resp.json();
+            failures = 0;
+            render(last);
+        } catch (err) {
+            failures += 1;
+            if (failures >= 2) {
+                $("level").className = "level tone-bad";
+                $("level").textContent = "offline";
+                $("reasons").innerHTML = `<li>The monitor backend is not answering (${esc(err.message)}). Showing the last data received.</li>`;
             }
         }
+    }
 
-        function pushHistory(arr, value) {
-            arr.push(value);
-            if (arr.length > MAX_POINTS) arr.shift();
-        }
+    function schedule() {
+        clearInterval(timer);
+        const ms = parseInt($("refresh").value, 10);
+        if (ms > 0 && !document.hidden) timer = setInterval(refresh, ms);
+    }
 
-        function formatTime(timestamp) {
-            const date = new Date(timestamp);
-            const now = new Date();
-            const diff = Math.floor((now - date) / 1000);
+    $("refresh").addEventListener("change", () => { schedule(); refresh(); });
+    document.addEventListener("visibilitychange", () => { schedule(); if (!document.hidden) refresh(); });
 
-            if (diff < 60) return `${diff}s ago`;
-            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-            return date.toLocaleString();
-        }
+    function syncThemeButton() {
+        $("theme").textContent = document.documentElement.dataset.theme === "dark" ? "Light mode" : "Dark mode";
+    }
+    $("theme").addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem("flead-theme", next); } catch (e) {}
+        syncThemeButton();
+        if (last) render(last);
+    });
+    syncThemeButton();
 
-        // Card click → JSON drawer
-        function wireCardJson(cardId, extractor, title) {
-            const el = document.getElementById(cardId);
-            if (!el) return;
-            el.addEventListener("click", () => {
-                if (!lastStatus) return;
-                const payload = extractor ? extractor(lastStatus) : lastStatus;
-                openJsonDrawer(payload, title, "Subset of /api/status");
-            });
-        }
+    $("raw").addEventListener("click", () => {
+        $("raw-json").textContent = JSON.stringify(last, null, 2);
+        $("raw-dialog").showModal();
+    });
+    $("raw-close").addEventListener("click", () => $("raw-dialog").close());
 
-        wireCardJson("card-kafka", (s) => ({ kafka: s.kafka, kafka_status: s.kafka_status }), "Kafka Topics");
-        wireCardJson("card-flink", (s) => ({ flink: s.flink }), "Flink Jobs");
-        wireCardJson("card-local", (s) => ({ local_models: s.database?.local_models }), "Local Models Table");
-        wireCardJson("card-global", (s) => ({ federated_models: s.database?.federated_models }), "Global Models Table");
-        wireCardJson("card-health", (s) => ({ docker_services: s.docker_services, pipeline_health: s.pipeline_health }), "Docker & Health");
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => last && render(last), 150);
+    });
 
-        // First update & schedule
-        updateDashboard();
-        scheduleRefresh();
-    </script>
+    refresh();
+    schedule();
+</script>
 </body>
 </html>

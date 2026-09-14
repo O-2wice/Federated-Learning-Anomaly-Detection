@@ -39,6 +39,15 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 PIPELINE_LOG = LOGS_DIR / "pipeline_orchestrator.log"
 
+# Consoles and redirected output on Windows use cp1252, which cannot encode
+# the ✓ marks in the log messages; replace such characters instead of
+# printing a logging traceback for every line
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -249,34 +258,46 @@ def start_spark_analytics_nonblocking(
     ]
 
     submit_log = LOGS_DIR / "spark_analytics_submit.log"
-    
+    # The analytics job streams from Kafka forever (awaitTermination), so
+    # spark-submit never exits on success. Launch it detached and treat
+    # "still running after the grace period" as a successful submission;
+    # only an early exit is a failure. A blocking subprocess.run() here
+    # previously hung the orchestrator before Grafana setup / dashboards.
+    startup_grace_seconds = 45
+
     for attempt in range(1, max_retries + 1):
         try:
             logger.info("  Spark submit attempt %d/%d...", attempt, max_retries)
-            result = subprocess.run(
+            log_fh = open(submit_log, "a", encoding="utf-8")
+            log_fh.write(f"=== Attempt {attempt}/{max_retries} ===\nCMD: {' '.join(cmd)}\n")
+            log_fh.flush()
+            proc = subprocess.Popen(
                 cmd,
                 cwd=str(PROJECT_ROOT),
-                capture_output=True,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
                 text=True,
             )
-            
-            # Log this attempt
-            log_entry = (
-                f"=== Attempt {attempt}/{max_retries} ===\n"
-                f"CMD: {' '.join(cmd)}\n"
-                f"RET: {result.returncode}\n"
-                f"STDOUT:\n{result.stdout}\n"
-                f"STDERR:\n{result.stderr}\n\n"
-            )
-            # Append to log file
-            with open(submit_log, "a") as f:
-                f.write(log_entry)
-            
-            if result.returncode == 0:
-                logger.info("  ✓ Submitted Spark analytics via spark-master (script: %s)", target_path)
-                logger.info("  Check docker compose logs spark-master/spark-worker-1 for status.")
-                return  # Success - exit retry loop
-            
+
+            try:
+                returncode = proc.wait(timeout=startup_grace_seconds)
+            except subprocess.TimeoutExpired:
+                logger.info("  ✓ Spark analytics running on spark-master (script: %s)", target_path)
+                logger.info("  Streaming job continues in the background; output in %s", submit_log)
+                return  # Success - job is up and streaming
+
+            log_fh.close()
+            with open(submit_log, "r", encoding="utf-8", errors="replace") as f:
+                output = f.read()
+
+            if returncode == 0:
+                logger.info("  ✓ Spark analytics job completed (script: %s)", target_path)
+                return
+
+            class _Result:  # keep the retry classification below unchanged
+                stderr = output
+            result = _Result()
+
             # Check if it's a transient Maven/download error (worth retrying)
             stderr_lower = result.stderr.lower()
             is_transient = any(
@@ -495,9 +516,12 @@ def print_access_points() -> None:
     logger.info("Device Viewer Website:    http://localhost:8082")
     logger.info("Flink Dashboard:          http://localhost:8161")
     logger.info("Spark Master:             http://localhost:8086")
+    logger.info("Spark Worker:             http://localhost:8087")
     logger.info("TimescaleDB:              localhost:5432")
     logger.info("Monitoring Dashboard:     http://localhost:5001")
     logger.info("Jupyter Dev UI:           http://localhost:8888")
+    logger.info("Prometheus:               http://localhost:9090")
+    logger.info("Alertmanager:             http://localhost:9093")
     logger.info("")
 
 
@@ -559,6 +583,8 @@ def open_dashboards_in_browser() -> None:
         "http://localhost:8087",  # Spark worker (if mapped)
         "http://localhost:5001",  # Live monitoring dashboard
         "http://localhost:8888",  # Jupyter Dev UI
+        "http://localhost:9090",  # Prometheus
+        "http://localhost:9093",  # Alertmanager
     ]
     # Use a configurable delay between opening dashboards
     delay = float(os.getenv("OPEN_DASHBOARD_DELAY", OPEN_DASHBOARD_DELAY_DEFAULT))
@@ -622,6 +648,9 @@ def main() -> None:
     parser.add_argument("--fast", action="store_true", help="use short wait timeouts for faster startup")
     parser.add_argument("--timeout", type=int, default=os.getenv("STARTUP_TIMEOUT", STARTUP_TIMEOUT_DEFAULT), help="startup timeout in seconds")
     parser.add_argument("--interval", type=int, default=os.getenv("STARTUP_INTERVAL", STARTUP_INTERVAL_DEFAULT), help="polling interval in seconds")
+    parser.add_argument("--no-browser", action="store_true",
+                        default=os.getenv("FLEAD_NO_BROWSER", "").lower() in ("1", "true", "yes"),
+                        help="do not open the web interfaces in a browser (also FLEAD_NO_BROWSER=1)")
     args = parser.parse_args()
 
     # Adjust values for fast start
@@ -673,7 +702,10 @@ def main() -> None:
 
     logger.info("Pipeline started successfully!")
     logger.info("")
-    open_dashboards_in_browser()
+    if args.no_browser:
+        logger.info("Not opening the web interfaces (--no-browser); see ACCESS POINTS above.")
+    else:
+        open_dashboards_in_browser()
 
 
 if __name__ == "__main__":
